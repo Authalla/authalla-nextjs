@@ -11,3 +11,5 @@ First release.
 - The User API: the user's profile, email, sessions, connected apps and
   passkeys, from the server or the browser.
 - `addPasskey()`, and `prompt: "login"` and `maxAge` for a fresh sign-in.
+- `<AuthallaProvider session>` takes the promise from `clientSession()`, so
+  the root layout doesn't block prerendering with Cache Components.

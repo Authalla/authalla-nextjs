@@ -52,15 +52,25 @@ const AuthContext = createContext<AuthState | undefined>(undefined);
 type ProviderProps = {
   children: ReactNode;
   /**
-   * The session from the server (`await authalla.clientSession()`), so the
-   * first render is already right. Without it the provider fetches it.
+   * The session from the server. Pass the promise
+   * (`authalla.clientSession()`, not awaited) so the layout doesn't wait for
+   * cookies and pages can still be prerendered, as Next.js requires with
+   * Cache Components: `status` is "loading" until it resolves. Pass the
+   * awaited session (inside `<Suspense>`) to have the first render already
+   * right. Without either the provider fetches it.
    */
-  session?: ClientSession;
+  session?: ClientSession | Promise<ClientSession>;
   /** Where the route handler is mounted. Default: /api/auth. */
   basePath?: string;
 };
 
-export function AuthallaProvider({ children, session: initial, basePath = "/api/auth" }: ProviderProps) {
+function isPromise(value: unknown): value is Promise<ClientSession> {
+  return typeof (value as { then?: unknown } | undefined)?.then === "function";
+}
+
+export function AuthallaProvider({ children, session: given, basePath = "/api/auth" }: ProviderProps) {
+  const pending = isPromise(given) ? given : undefined;
+  const initial = isPromise(given) ? undefined : given;
   const [session, setSession] = useState<ClientSession | undefined>(initial);
   const [signInError, setSignInError] = useState<SignInError>();
   const loading = useRef<Promise<void> | undefined>(undefined);
@@ -100,13 +110,29 @@ export function AuthallaProvider({ children, session: initial, basePath = "/api/
   // view, check again: the session may have ended while it was hidden, and
   // the check refreshes tokens that are about to expire.
   useEffect(() => {
-    if (!initial) void load();
+    if (!pending) return;
+    let current = true;
+    pending.then(
+      (resolved) => {
+        if (current) setSession(resolved);
+      },
+      () => {
+        if (current) void load();
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [pending, load]);
+
+  useEffect(() => {
+    if (!initial && !pending) void load();
     const onVisible = () => {
       if (document.visibilityState === "visible") void load();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [initial, load]);
+  }, [initial, pending, load]);
 
   // A sign-in that failed comes back with the error in the address. Read it
   // once, then take it out so a reload doesn't show it again.
