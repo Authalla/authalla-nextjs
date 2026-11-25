@@ -112,24 +112,73 @@ describe("AuthallaProvider", () => {
       expect(html).toContain("<span>loading</span>");
     });
 
+    // What a Server Component's promise turns into in the browser and during
+    // SSR: React's thenable, whose then() registers callbacks and returns
+    // nothing rather than a chained promise.
+    it("takes React's thenable from a Server Component", async () => {
+      const callbacks: ((session: ClientSession) => void)[] = [];
+      const thenable = {
+        status: "pending",
+        then(resolve: (session: ClientSession) => void) {
+          callbacks.push(resolve);
+        },
+      } as unknown as Promise<ClientSession>;
+      await act(async () =>
+        root.render(
+          <AuthallaProvider session={thenable}>
+            <Suspense fallback={<span>fallback</span>}>
+              <Status suspense />
+            </Suspense>
+            <Status />
+          </AuthallaProvider>,
+        ),
+      );
+      expect(container.textContent).toBe("fallbackloading");
+
+      await act(async () => callbacks.forEach((resolve) => resolve(signedIn)));
+      expect(container.textContent).toBe("signed-in:Janesigned-in:Jane");
+    });
+
     it("doesn't suspend when the session is already known", async () => {
       await act(async () => root.render(<AuthallaProvider session={signedIn}><Status suspense /></AuthallaProvider>));
       expect(container.textContent).toBe("signed-in:Jane");
     });
 
-    it("falls back to loading when the promise fails", async () => {
-      const promise = Promise.reject(new Error("render aborted"));
-      fetchMock.mockImplementation(() => new Promise(() => {}));
-      await act(async () =>
-        root.render(
-          <AuthallaProvider session={promise}>
-            <Suspense fallback={<span>fallback</span>}>
-              <Status suspense />
-            </Suspense>
-          </AuthallaProvider>,
-        ),
+    // Next.js rejects request data when a prerender ends. Rendering signed
+    // out then would bake "signed out" into the static page for everyone.
+    it("stays suspended when the promise fails, until the session is fetched", async () => {
+      const promise = Promise.reject(new Error("prerender aborted"));
+      let answer!: (response: Response) => void;
+      fetchMock.mockImplementation(() => new Promise<Response>((r) => (answer = r)));
+      const tree = (
+        <AuthallaProvider session={promise}>
+          <Suspense fallback={<span>fallback</span>}>
+            <Status suspense />
+          </Suspense>
+        </AuthallaProvider>
       );
-      expect(container.textContent).toBe("loading");
+      await act(async () => root.render(tree));
+      expect(container.textContent).toBe("fallback");
+
+      await act(async () => answer(new Response(JSON.stringify(signedIn), { status: 200 })));
+      expect(container.textContent).toBe("signed-in:Jane");
+    });
+
+    it("stays suspended on the server when the promise fails", async () => {
+      const controller = new AbortController();
+      const stream = await renderToReadableStream(
+        <AuthallaProvider session={Promise.reject(new Error("prerender aborted"))}>
+          <Suspense fallback={<span>fallback</span>}>
+            <Status suspense />
+          </Suspense>
+        </AuthallaProvider>,
+        { signal: controller.signal, onError: () => {} },
+      );
+      await new Promise((r) => setTimeout(r, 10));
+      controller.abort();
+      const html = await new Response(stream).text();
+      expect(html).toContain("fallback");
+      expect(html).not.toContain("loading");
     });
   });
 });

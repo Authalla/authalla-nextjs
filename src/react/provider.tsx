@@ -46,7 +46,7 @@ export type AuthState = {
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
 // The session from the layout while it's on its way, for useAuth({ suspense: true }).
-const PendingContext = createContext<Promise<ClientSession | undefined> | undefined>(undefined);
+const PendingContext = createContext<Promise<ClientSession> | undefined>(undefined);
 
 function fromSession(session: ClientSession | undefined): Pick<AuthState, "status" | "user" | "sessionEnded"> {
   return {
@@ -71,16 +71,23 @@ type ProviderProps = {
   basePath?: string;
 };
 
-function isPromise(value: unknown): value is Promise<ClientSession> {
+function isThenable(value: unknown): value is PromiseLike<ClientSession> {
   return typeof (value as { then?: unknown } | undefined)?.then === "function";
 }
 
 export function AuthallaProvider({ children, session: given, basePath = "/api/auth" }: ProviderProps) {
-  const pending = isPromise(given) ? given : undefined;
-  const initial = isPromise(given) ? undefined : given;
+  const initial = isThenable(given) ? undefined : given;
+  // A promise passed from a Server Component arrives as React's own
+  // thenable, whose then() returns nothing; Promise.resolve makes it a
+  // real promise to chain on.
+  const pending = useMemo(() => (isThenable(given) ? Promise.resolve(given) : undefined), [given]);
   const [session, setSession] = useState<ClientSession | undefined>(initial);
-  // A failed promise reads as "not known yet"; the effect below fetches it.
-  const settled = useMemo(() => pending?.then((s) => s, () => undefined), [pending]);
+  // For useAuth({ suspense: true }). A failed promise never settles, so the
+  // component stays suspended until the effect below has fetched the
+  // session. That matters when Next.js prerenders: it rejects the request's
+  // data at the end, and a suspended boundary is then left to render per
+  // request instead of being prerendered signed out.
+  const settled = useMemo(() => pending?.then((s) => s, () => new Promise<ClientSession>(() => {})), [pending]);
   const [signInError, setSignInError] = useState<SignInError>();
   const loading = useRef<Promise<void> | undefined>(undefined);
 
@@ -256,8 +263,7 @@ export function useAuth(options?: { suspense?: boolean }): AuthState {
   const pending = useContext(PendingContext);
   if (!auth) throw new Error("useAuth must be used inside <AuthallaProvider>.");
   if (options?.suspense && auth.status === "loading" && pending) {
-    const session = use(pending);
-    if (session) return { ...auth, ...fromSession(session) };
+    return { ...auth, ...fromSession(use(pending)) };
   }
   return auth;
 }
