@@ -4,16 +4,13 @@
 // It knows only what the route handler tells it; tokens stay on the server.
 // Nothing here imports Next.js, so any React framework can use it.
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, use, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ERROR_DESCRIPTION_PARAM, ERROR_PARAM, ERROR_PROMPT_PARAM } from "../core/constants.js";
-import type { SignInParams } from "../core/oauth.js";
+import { signInPath, type SignInOptions } from "../core/sign-in-path.js";
 import type { ClientSession, SessionUser } from "../core/session.js";
 import { createUserApi, UserApiError, type UserApi } from "../core/user-api.js";
 
-export type SignInOptions = SignInParams & {
-  /** The path to come back to after signing in. Default: the current page. */
-  returnTo?: string;
-};
+export type { SignInOptions };
 
 /** A sign-in that came back without signing the user in. */
 export type SignInError = {
@@ -48,6 +45,16 @@ export type AuthState = {
 };
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
+// The session from the layout while it's on its way, for useAuth({ suspense: true }).
+const PendingContext = createContext<Promise<ClientSession | undefined> | undefined>(undefined);
+
+function fromSession(session: ClientSession | undefined): Pick<AuthState, "status" | "user" | "sessionEnded"> {
+  return {
+    status: session === undefined ? "loading" : session.status,
+    user: session?.status === "signed-in" ? session.user : undefined,
+    sessionEnded: session?.status === "signed-out" && session.ended,
+  };
+}
 
 type ProviderProps = {
   children: ReactNode;
@@ -72,6 +79,8 @@ export function AuthallaProvider({ children, session: given, basePath = "/api/au
   const pending = isPromise(given) ? given : undefined;
   const initial = isPromise(given) ? undefined : given;
   const [session, setSession] = useState<ClientSession | undefined>(initial);
+  // A failed promise reads as "not known yet"; the effect below fetches it.
+  const settled = useMemo(() => pending?.then((s) => s, () => undefined), [pending]);
   const [signInError, setSignInError] = useState<SignInError>();
   const loading = useRef<Promise<void> | undefined>(undefined);
 
@@ -155,13 +164,8 @@ export function AuthallaProvider({ children, session: given, basePath = "/api/au
 
   const signIn = useCallback(
     (options: SignInOptions = {}) => {
-      const url = new URL(`${basePath}/signin`, window.location.href);
-      url.searchParams.set("returnTo", options.returnTo ?? window.location.pathname + window.location.search);
-      if (options.loginHint) url.searchParams.set("login_hint", options.loginHint);
-      if (options.uiLocales) url.searchParams.set("ui_locales", options.uiLocales);
-      if (options.prompt) url.searchParams.set("prompt", options.prompt);
-      if (options.maxAge !== undefined) url.searchParams.set("max_age", String(options.maxAge));
-      window.location.assign(url);
+      const returnTo = options.returnTo ?? window.location.pathname + window.location.search;
+      window.location.assign(signInPath(basePath, { ...options, returnTo }));
     },
     [basePath],
   );
@@ -221,9 +225,7 @@ export function AuthallaProvider({ children, session: given, basePath = "/api/au
 
   const value = useMemo<AuthState>(
     () => ({
-      status: session === undefined ? "loading" : session.status,
-      user: session?.status === "signed-in" ? session.user : undefined,
-      sessionEnded: session?.status === "signed-out" && session.ended,
+      ...fromSession(session),
       signInError,
       signIn,
       addPasskey,
@@ -234,12 +236,29 @@ export function AuthallaProvider({ children, session: given, basePath = "/api/au
     [session, signInError, signIn, addPasskey, signOut, load, userApi],
   );
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <PendingContext.Provider value={settled}>
+      <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+    </PendingContext.Provider>
+  );
 }
 
-export function useAuth(): AuthState {
+/**
+ * Who is signed in, and the ways to sign in and out.
+ *
+ * While the session from the layout is on its way, `status` is "loading".
+ * With `{ suspense: true }` the component suspends instead, so inside a
+ * `<Suspense>` boundary its first render, on the server too, already shows
+ * the user. Prerendering then keeps the boundary's fallback.
+ */
+export function useAuth(options?: { suspense?: boolean }): AuthState {
   const auth = useContext(AuthContext);
+  const pending = useContext(PendingContext);
   if (!auth) throw new Error("useAuth must be used inside <AuthallaProvider>.");
+  if (options?.suspense && auth.status === "loading" && pending) {
+    const session = use(pending);
+    if (session) return { ...auth, ...fromSession(session) };
+  }
   return auth;
 }
 

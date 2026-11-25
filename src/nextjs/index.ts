@@ -12,14 +12,16 @@
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { NextResponse, type NextRequest } from "next/server";
-import type { AuthallaOptions } from "../core/config.js";
+import { basePathOf, type AuthallaOptions } from "../core/config.js";
 import { jarToHeader, type CookieToSet } from "../core/cookies.js";
 import { createCore } from "../core/handler.js";
+import { signInPath, type SignInOptions } from "../core/sign-in-path.js";
 import { isEnded, toClientSession, toSession, type ClientSession, type Session } from "../core/session.js";
 import { createUserApi, UserApiError, type UserApi } from "../core/user-api.js";
 
 export type { AuthallaOptions } from "../core/config.js";
 export type { SignInParams } from "../core/oauth.js";
+export type { SignInOptions } from "../core/sign-in-path.js";
 export type { Session, SessionUser, ClientSession } from "../core/session.js";
 export { UserApiError, type UserApi, type Me, type UserSession, type ConnectedApp, type ConnectedApps, type Passkey } from "../core/user-api.js";
 export { ConfigError } from "../core/config.js";
@@ -78,12 +80,34 @@ export function createAuthalla(options: AuthallaOptions = {}) {
     return toClientSession(await core.readSession(cookieHeader(await cookies()), await currentUrl()));
   }
 
+  /**
+   * The link that starts a sign-in, for an <a href> in a Server Component
+   * or redirect() in a Server Action. It reads no request data, so a page
+   * using it can still be prerendered.
+   */
+  function signInUrl(params: SignInOptions = {}): string {
+    return signInPath(basePathOf(options), params);
+  }
+
   /** The session, or a redirect to sign-in that comes back to returnTo. */
   async function requireSession(returnTo = "/"): Promise<Session> {
     const session = await auth();
     if (session) return session;
-    const { basePath } = core.config(await currentUrl());
-    redirect(`${basePath}/signin?returnTo=${encodeURIComponent(returnTo)}`);
+    redirect(signInUrl({ returnTo }));
+  }
+
+  /**
+   * Signs out from a Server Action or Route Handler: ends the grant, clears
+   * the session, then sends the browser to Authalla's logout and back.
+   */
+  async function signOut(): Promise<never> {
+    const store = await cookies();
+    if (!canSetCookies(store)) {
+      throw new Error("authalla.signOut() must run in a Server Action or Route Handler, where cookies can be changed.");
+    }
+    const { cookies: toSet, location } = await core.signOut(cookieHeader(store), await currentUrl());
+    setAll(store, toSet);
+    redirect(location);
   }
 
   /**
@@ -162,6 +186,8 @@ export function createAuthalla(options: AuthallaOptions = {}) {
     auth,
     clientSession,
     requireSession,
+    signInUrl,
+    signOut,
     getAccessToken,
     userApi,
     proxy,

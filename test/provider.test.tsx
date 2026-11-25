@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
-import { act } from "react";
+import { act, Suspense } from "react";
+import { renderToReadableStream } from "react-dom/server";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClientSession } from "../src/core/session.js";
@@ -14,9 +15,15 @@ const signedIn: ClientSession = {
   scopes: ["openid"],
 };
 
-function Status() {
-  const { status, user } = useAuth();
+function Status({ suspense = false }: { suspense?: boolean }) {
+  const { status, user } = useAuth({ suspense });
   return <span>{status}{user ? `:${user.name}` : ""}</span>;
+}
+
+function deferred() {
+  let resolve!: (session: ClientSession) => void;
+  const promise = new Promise<ClientSession>((r) => (resolve = r));
+  return { promise, resolve };
 }
 
 let container: HTMLElement;
@@ -68,5 +75,61 @@ describe("AuthallaProvider", () => {
     await act(async () => root.render(<AuthallaProvider><Status /></AuthallaProvider>));
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(container.textContent).toBe("signed-out");
+  });
+
+  describe("useAuth({ suspense: true })", () => {
+    it("suspends until the session arrives instead of showing loading", async () => {
+      const { promise, resolve } = deferred();
+      const tree = (
+        <AuthallaProvider session={promise}>
+          <Suspense fallback={<span>fallback</span>}>
+            <Status suspense />
+          </Suspense>
+        </AuthallaProvider>
+      );
+      await act(async () => root.render(tree));
+      expect(container.textContent).toBe("fallback");
+
+      await act(async () => resolve(signedIn));
+      expect(container.textContent).toBe("signed-in:Jane");
+    });
+
+    it("renders the user on the server, the first time", async () => {
+      const { promise, resolve } = deferred();
+      const stream = await renderToReadableStream(
+        <AuthallaProvider session={promise}>
+          <Suspense fallback={<span>fallback</span>}>
+            <Status suspense />
+          </Suspense>
+          <Status />
+        </AuthallaProvider>,
+      );
+      resolve(signedIn);
+      await stream.allReady;
+      const html = await new Response(stream).text();
+      // The suspending one waited; the plain one rendered loading at once.
+      expect(html).toContain("signed-in<!-- -->:Jane");
+      expect(html).toContain("<span>loading</span>");
+    });
+
+    it("doesn't suspend when the session is already known", async () => {
+      await act(async () => root.render(<AuthallaProvider session={signedIn}><Status suspense /></AuthallaProvider>));
+      expect(container.textContent).toBe("signed-in:Jane");
+    });
+
+    it("falls back to loading when the promise fails", async () => {
+      const promise = Promise.reject(new Error("render aborted"));
+      fetchMock.mockImplementation(() => new Promise(() => {}));
+      await act(async () =>
+        root.render(
+          <AuthallaProvider session={promise}>
+            <Suspense fallback={<span>fallback</span>}>
+              <Status suspense />
+            </Suspense>
+          </AuthallaProvider>,
+        ),
+      );
+      expect(container.textContent).toBe("loading");
+    });
   });
 });
