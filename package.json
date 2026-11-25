@@ -1,0 +1,68 @@
+{
+  "name": "@authalla/nextjs",
+  "version": "0.1.0",
+  "description": "Sign in with Authalla in a Next.js app: server-side sessions, React hooks and the User API.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Authalla/authalla-nextjs.git"
+  },
+  "homepage": "https://github.com/Authalla/authalla-nextjs#readme",
+  "bugs": "https://github.com/Authalla/authalla-nextjs/issues",
+  "keywords": [
+    "authalla",
+    "nextjs",
+    "oauth2",
+    "oidc",
+    "authentication",
+    "passkeys"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/nextjs/index.d.ts",
+      "default": "./dist/nextjs/index.js"
+    },
+    "./client": {
+      "types": "./dist/react/index.d.ts",
+      "default": "./dist/react/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "default": "./dist/core/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=20.9"
+  },
+  "packageManager": "pnpm@11.23.0",
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "check-package": "node scripts/check-package.mjs",
+    "prepublishOnly": "pnpm build && pnpm check-package"
+  },
+  "peerDependencies": {
+    "next": ">=16",
+    "react": ">=19"
+  },
+  "devDependencies": {
+    "@types/node": "^26",
+    "@types/react": "^19",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "next": "16.4.6",
+    "react": "^19.2.1",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.1.0"
+  }
+}

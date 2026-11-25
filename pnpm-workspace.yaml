@@ -1,0 +1,10 @@
+# Supply-chain settings, the same as the Authalla server repo's.
+
+# No dependency runs install scripts.
+ignoreScripts: true
+# Transitive dependencies come from the registry only, never git or tarballs.
+blockExoticSubdeps: true
+# Fail when a package's trust level drops compared to its previous releases.
+trustPolicy: no-downgrade
+# A release must be two days old before it's installed.
+minimumReleaseAge: 2880
