@@ -14,7 +14,7 @@ const noReact = {
 };
 
 export default tseslint.config(
-  { ignores: ["dist"] },
+  { ignores: ["dist", "examples"] },
   ...tseslint.configs.recommended,
   reactHooks.configs.flat.recommended,
   {

@@ -48,7 +48,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "check-package": "node scripts/check-package.mjs",
-    "prepublishOnly": "pnpm build && pnpm check-package"
+    "prepublishOnly": "pnpm build && pnpm check-package",
+    "example": "pnpm build && pnpm --filter authalla-nextjs-example build && pnpm --filter authalla-nextjs-example smoke"
   },
   "peerDependencies": {
     "next": ">=16",

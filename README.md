@@ -70,6 +70,24 @@ session?.user;                                 // { id, name, email, emailVerifi
 await authalla.requireSession("/account");     // or redirect to sign-in, back to /account
 await authalla.getAccessToken();               // for calling your own API
 await authalla.userApi.listSessions();         // the User API, as the signed-in user
+authalla.signInUrl({ returnTo: "/account" });  // "/api/auth/signin?returnTo=%2Faccount", for an <a href>
+await authalla.signOut();                      // in a Server Action: sign out and go to Authalla's logout
+```
+
+`signInUrl()` takes the same options as the browser's `signIn()` and reads
+no request data, so a prerendered page can link to sign-in. `signOut()`
+must run in a Server Action or Route Handler, where it can clear the
+cookie:
+
+```tsx
+// app/actions.ts
+"use server";
+export async function signOutAction() {
+  await authalla.signOut();
+}
+
+// in a Server Component
+<form action={signOutAction}><button>Sign out</button></form>
 ```
 
 These read the request's cookies. With Cache Components, put the Server
@@ -108,9 +126,17 @@ await userApi.updateMe({ name: "Jane Smith" }); // the session's ID token is ref
 <SignedOut><button onClick={() => signIn()}>Sign in</button></SignedOut>
 ```
 
-`status` is `"loading"` until the session from the layout arrives. To have
-the first render already signed in, await it inside `<Suspense>` instead:
-`<AuthallaProvider session={await authalla.clientSession()}>`.
+`status` is `"loading"` until the session from the layout arrives. For a
+component that should never show that, such as the header's user menu, use
+`useAuth({ suspense: true })` inside `<Suspense>`: it waits for the session
+instead, so its first render, on the server too, already shows the user,
+and the page around it is still prerendered.
+
+```tsx
+<Suspense fallback={<MenuPlaceholder />}>
+  <UserMenu /> {/* calls useAuth({ suspense: true }) */}
+</Suspense>
+```
 
 Before a sensitive action, `signIn({ prompt: "login" })` makes the user sign
 in again even though they are signed in, and `signIn({ maxAge: 300 })` only
@@ -164,12 +190,25 @@ The types mirror the [User API reference](https://docs.authalla.com/docs/user-ap
 The lint config enforces the direction, so an adapter for React Router or
 TanStack Start can reuse `core` and `react` as they are.
 
+## Example
+
+[`examples/nextjs-app`](examples/nextjs-app) is a small app set up the way a
+new `create-next-app` is, with Cache Components on: sign-in and sign-out
+from the server and the browser, a protected page, a Server Action changing
+the user's name, and the user's passkeys. To run it against your tenant,
+copy its `.env.example` to `.env.local`, fill it in, then
+`pnpm build && pnpm --filter authalla-nextjs-example dev`.
+
 ## Development
 
 ```bash
 pnpm install
 pnpm test && pnpm typecheck && pnpm lint && pnpm build
+pnpm example   # builds the example app and smoke-tests it with next start
 ```
+
+CI runs both, so a change that stops a Cache Components app from building
+fails CI.
 
 ## Releasing
 
