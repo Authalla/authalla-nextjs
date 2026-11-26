@@ -41,6 +41,10 @@
   "engines": {
     "node": ">=20.9"
   },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "packageManager": "pnpm@11.23.0",
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
