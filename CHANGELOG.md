@@ -17,3 +17,5 @@ First release.
   Actions.
 - `useAuth({ suspense: true })`, so a component waits for the session
   instead of rendering a loading state first.
+- `requireSession()` comes back to the current page by default.
+- `user.picture`, the user's profile picture from a social login.

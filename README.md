@@ -90,7 +90,8 @@ export const config = { matcher: ["/((?!api/|_next/|.*\\..*).*)"] };
 
 The route handler signs users in and out and serves the browser's session
 and User API calls ([routes](#route-handler)). The proxy refreshes the
-tokens before a page renders, so Server Components always read fresh ones.
+tokens before a page renders, so Server Components always read fresh ones,
+and tells `requireSession()` which page to come back to.
 
 ### 4. Add the provider to the root layout
 
@@ -137,7 +138,7 @@ same page, signed in.
 ### Protect a page
 
 `requireSession()` returns the session, or sends a signed-out visitor to
-sign in and back to the path you give.
+sign in and back to the same page.
 
 ```tsx
 // app/account/page.tsx
@@ -145,7 +146,7 @@ import { Suspense } from "react";
 import { authalla } from "@/lib/authalla";
 
 async function Account() {
-  const { user } = await authalla.requireSession("/account");
+  const { user } = await authalla.requireSession();
   return <p>Signed in as {user.email}</p>;
 }
 
@@ -163,6 +164,11 @@ request's cookies. With Cache Components, put the component that calls
 them inside `<Suspense>`, as for any request data. Inside `<Suspense>`,
 `requireSession()` redirects in the browser once the page streams, rather
 than with a 307.
+
+Server Components can't read their own URL in Next.js, so the proxy passes
+the page's path on and `requireSession()` comes back to it. Without the
+proxy it comes back to `/`. To send the user somewhere else, pass the path:
+`requireSession("/welcome")`.
 
 To show something different to signed-out visitors instead of redirecting,
 use `auth()`:
@@ -199,6 +205,17 @@ export function Header() {
   );
 }
 ```
+
+`user` holds what Authalla knows about the signed-in user:
+
+| | |
+| --- | --- |
+| `user.name` | Their name. |
+| `user.email` | Their email address, with the `email` scope. |
+| `user.emailVerified` | Whether they proved they own the email address. |
+| `user.picture` | Their profile picture from a social login (Google, GitHub…), when they signed in with one. |
+| `user.id` | Their Authalla user ID. Use it, not the email, to link the user to your own data. |
+| `user.claims` | Every claim of the ID token, e.g. `org_id` when they signed in through an Organization. |
 
 `status` is `"loading"` until the session from the layout arrives. For a
 component that should never show that, such as the header's user menu, use
@@ -329,8 +346,11 @@ export function Devices() {
 }
 ```
 
-**Show the apps the user has connected**, such as AI agents they approved,
-and revoke one:
+**Show the apps the user has connected**, and revoke one. This matters
+most when your API, such as an MCP server, is an Authalla resource server:
+AI agents like Claude and ChatGPT register themselves and get the user's
+consent to call it. This list is where the user sees which agents can act
+for them, and cuts one off:
 
 ```ts
 const { connected_apps } = await authalla.userApi.listConnectedApps();
@@ -338,7 +358,14 @@ await authalla.userApi.revokeConnectedApp(connected_apps[0].id);
 ```
 
 **Manage passkeys.** `addPasskey()` sends the user to Authalla to create
-one and back; list, rename and remove them with the User API:
+one and back; list, rename and remove them with the User API.
+
+A passkey belongs to one website: the browser binds it to the domain of
+the page that created it, and only offers it on that domain. Users sign in
+on your Authalla sign-in page, so their passkeys must be created there,
+not on your app's pages. That holds with a custom domain too: a passkey
+for `login.customer.com` is created on `login.customer.com`, even if your
+app runs on `customer.com`.
 
 ```tsx
 const { addPasskey, userApi } = useAuth();
@@ -457,9 +484,9 @@ What `createAuthalla()` returns:
 | | |
 | --- | --- |
 | `handlers` | `{ GET, POST, PATCH, PUT, DELETE }` for `app/api/auth/[...authalla]/route.ts`. |
-| `proxy` | For `proxy.ts`. Refreshes the tokens before a page renders. Leave the route handler's path out of its matcher. |
+| `proxy` | For `proxy.ts`. Refreshes the tokens before a page renders and passes the page's path on to `requireSession()`. Leave the route handler's path out of its matcher. |
 | `auth()` | `Promise<Session \| null>`. The signed-in session, or `null`. Doesn't refresh tokens. |
-| `requireSession(returnTo = "/")` | `Promise<Session>`. The session, or a redirect to sign-in that comes back to `returnTo`. |
+| `requireSession(returnTo?)` | `Promise<Session>`. The session, or a redirect to sign-in that comes back to `returnTo`; by default the current page (with the proxy) or `/`. |
 | `getAccessToken({ force? })` | `Promise<string \| null>`. An access token with at least a minute left, refreshed if needed; `force` refreshes now. In a Server Component it returns the stored token without refreshing. |
 | `userApi` | The [User API](#user-api) as the signed-in user. |
 | `signInUrl(options?)` | `string`. The path that starts a sign-in, e.g. `/api/auth/signin?returnTo=%2Faccount`. Takes the [sign-in options](#sign-in-options). |
@@ -547,6 +574,7 @@ type SessionUser = {
   name?: string;
   email?: string;
   emailVerified?: boolean;
+  picture?: string;                  // from a social login's profile, when there is one
   claims: Record<string, unknown>;   // every claim of the latest ID token
 };
 
