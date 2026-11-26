@@ -28,6 +28,18 @@ export { ConfigError } from "../core/config.js";
 
 type CookieStore = Awaited<ReturnType<typeof cookies>>;
 
+// The proxy tells the page its own path, which Server Components can't read,
+// so requireSession() can come back to it. The proxy always sets it, so a
+// browser can't choose it; the route handler checks returnTo regardless.
+const PATH_HEADER = "x-authalla-path";
+
+function pagePath(url: URL): string {
+  const search = new URLSearchParams(url.search);
+  search.delete("_rsc"); // Next.js's cache key for client navigations
+  const query = search.toString();
+  return `${url.pathname}${query ? `?${query}` : ""}`;
+}
+
 function cookieHeader(store: CookieStore): string {
   return store
     .getAll()
@@ -89,11 +101,14 @@ export function createAuthalla(options: AuthallaOptions = {}) {
     return signInPath(basePathOf(options), params);
   }
 
-  /** The session, or a redirect to sign-in that comes back to returnTo. */
-  async function requireSession(returnTo = "/"): Promise<Session> {
+  /**
+   * The session, or a redirect to sign-in that comes back to returnTo:
+   * by default the current page, which the proxy passes on, or / without it.
+   */
+  async function requireSession(returnTo?: string): Promise<Session> {
     const session = await auth();
     if (session) return session;
-    redirect(signInUrl({ returnTo }));
+    redirect(signInUrl({ returnTo: returnTo ?? (await headers()).get(PATH_HEADER) ?? "/" }));
   }
 
   /**
@@ -163,17 +178,18 @@ export function createAuthalla(options: AuthallaOptions = {}) {
    * handler's path out of its matcher; it refreshes for itself.
    */
   async function proxy(request: NextRequest): Promise<NextResponse> {
+    const forwarded = new Headers(request.headers);
+    forwarded.set(PATH_HEADER, pagePath(new URL(request.url)));
     let result: Awaited<ReturnType<typeof core.freshen>>;
     try {
       result = await core.freshen(request.headers.get("cookie"), undefined, request.url);
     } catch (err) {
       console.error("authalla: the proxy couldn't check the session:", err);
-      return NextResponse.next();
+      return NextResponse.next({ request: { headers: forwarded } });
     }
-    if (result.cookies.length === 0) return NextResponse.next();
+    if (result.cookies.length === 0) return NextResponse.next({ request: { headers: forwarded } });
     // The page renders from the request's cookies, so it gets the new ones
     // too, and the browser gets them on the response.
-    const forwarded = new Headers(request.headers);
     forwarded.set("cookie", jarToHeader(result.jar));
     const response = NextResponse.next({ request: { headers: forwarded } });
     for (const { name, value, options } of result.cookies) response.cookies.set(name, value, options);

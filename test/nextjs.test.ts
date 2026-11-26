@@ -7,7 +7,7 @@ import { readSignInParams, signInPath } from "../src/core/sign-in-path.js";
 import { APP, Browser, CLIENT_ID, FakeAuthalla, ISSUER } from "./fake-authalla.js";
 
 // The request a Server Action sees: the browser's cookies, which it may change.
-const request = vi.hoisted(() => ({ cookies: new Map<string, string>(), writable: true }));
+const request = vi.hoisted(() => ({ cookies: new Map<string, string>(), writable: true, headers: {} as Record<string, string> }));
 
 vi.mock("next/headers", () => ({
   cookies: async () => ({
@@ -22,7 +22,7 @@ vi.mock("next/headers", () => ({
       request.cookies.delete(name);
     },
   }),
-  headers: async () => new Headers({ host: new URL(APP).host, "x-forwarded-proto": "https" }),
+  headers: async () => new Headers({ host: new URL(APP).host, "x-forwarded-proto": "https", ...request.headers }),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -66,6 +66,7 @@ beforeEach(() => {
   browser = new Browser(createCore(options).handle);
   request.cookies.clear();
   request.writable = true;
+  request.headers = {};
 });
 
 afterEach(() => {
@@ -88,6 +89,19 @@ describe("signInUrl", () => {
 
   it("is what requireSession() redirects to", async () => {
     expect(await redirectOf(createAuthalla(options).requireSession("/account"))).toBe(signInPath("/api/auth", { returnTo: "/account" }));
+  });
+});
+
+describe("requireSession", () => {
+  it("comes back to the page the proxy saw when given no returnTo", async () => {
+    const client = createAuthalla(options);
+    const response = await client.proxy(new NextRequest(`${APP}/orders/42?tab=items&_rsc=abc`));
+    request.headers = forwardedHeaders(response);
+    expect(await redirectOf(client.requireSession())).toBe(signInPath("/api/auth", { returnTo: "/orders/42?tab=items" }));
+  });
+
+  it("comes back to / without the proxy", async () => {
+    expect(await redirectOf(createAuthalla(options).requireSession())).toBe(signInPath("/api/auth", { returnTo: "/" }));
   });
 });
 
@@ -116,7 +130,19 @@ describe("signOut on the server", () => {
   });
 });
 
+// The request headers Next.js passes on to the page after the proxy.
+function forwardedHeaders(response: Response): Record<string, string> {
+  const names = (response.headers.get("x-middleware-override-headers") ?? "").split(",").filter(Boolean);
+  return Object.fromEntries(names.map((name) => [name, response.headers.get(`x-middleware-request-${name}`) ?? ""]));
+}
+
 describe("proxy", () => {
+  it("passes the page's path on, replacing one the browser sent", async () => {
+    const forged = new NextRequest(`${APP}/account`, { headers: { "x-authalla-path": "/elsewhere" } });
+    const headers = forwardedHeaders(await createAuthalla(options).proxy(forged));
+    expect(headers["x-authalla-path"]).toBe("/account");
+  });
+
   function page(cookie: string) {
     return new NextRequest(`${APP}/account`, { headers: { cookie } });
   }
