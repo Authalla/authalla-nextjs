@@ -358,7 +358,7 @@ The redirect URI is `appUrl` plus `basePath` plus `/callback`. Cookies are `Secu
 | --- | --- | --- |
 | `handlers` | | `GET`, `POST`, `PATCH`, `PUT`, and `DELETE` for `app/api/auth/[...authalla]/route.ts`. |
 | `proxy` | | For `proxy.ts`. Refreshes the tokens before a page renders, and passes the page's path to `requireSession()`. Leave the route handler's path out of its matcher. |
-| `auth()` | `Session \| null` | The signed-in session. Doesn't refresh tokens. |
+| `auth()` | `Session \| null` | The signed-in session. In Server Actions and Route Handlers, refreshes an access token that expires within a minute. |
 | `requireSession(returnTo?)` | `Session` | The session, or a redirect to sign-in that comes back to `returnTo`. The default is the current page with the proxy, and `/` without it. |
 | `getAccessToken({ force? })` | `string \| null` | An access token valid for at least a minute, refreshed if needed. `force` refreshes now. In a Server Component, returns the stored token. |
 | `userApi` | | The [User API](#user-api) as the signed-in user. |
