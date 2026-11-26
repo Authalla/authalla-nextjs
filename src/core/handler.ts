@@ -11,20 +11,12 @@
 
 import { ERROR_DESCRIPTION_PARAM, ERROR_PARAM, ERROR_PROMPT_PARAM } from "./constants.js";
 import { resolveConfig, type AuthallaOptions, type ResolvedConfig } from "./config.js";
-import { applyToJar, cookieName, parseCookieHeader, serializeCookie, type CookieJar, type CookieToSet } from "./cookies.js";
-import { authorizationUrl, exchangeCode, logoutUrl, OAuthError, revoke, type SignInParams } from "./oauth.js";
+import { cookieName, jarToHeader, parseCookieHeader, serializeCookie, type CookieJar, type CookieToSet } from "./cookies.js";
+import { authorizationUrl, exchangeCode, OAuthError, type SignInParams } from "./oauth.js";
+import { requestSession, type RequestCookies } from "./request-session.js";
 import { readSignInParams } from "./sign-in-path.js";
 import { randomString, seal, sha256Base64Url, unseal } from "./seal.js";
-import {
-  clearStoredSession,
-  cookieOptions,
-  freshen,
-  isEnded,
-  readStoredSession,
-  storedFromTokens,
-  toClientSession,
-  writeStoredSession,
-} from "./session.js";
+import { cookieOptions, storedFromTokens, writeStoredSession } from "./session.js";
 
 type PendingSignIn = { state: string; verifier: string; nonce: string; returnTo: string; prompt?: SignInParams["prompt"] };
 
@@ -195,44 +187,31 @@ export function createCore(options: AuthallaOptions = {}) {
     }
   }
 
-  // endSession revokes the grant and clears the session, and says where to
-  // send the browser: Authalla's logout, which comes back to the app.
-  async function endSession(cfg: ResolvedConfig, jar: CookieJar): Promise<{ cookies: CookieToSet[]; location: string }> {
-    const stored = await readStoredSession(cfg, jar);
-    let reachable = true;
-    if (stored && !isEnded(stored)) {
-      try {
-        // Ending the grant first means the tokens stop working even if the
-        // browser never reaches Authalla's logout below.
-        if (stored.refreshToken) await revoke(cfg, stored.refreshToken, "refresh_token");
-        else await revoke(cfg, stored.accessToken, "access_token");
-      } catch (err) {
-        // An answer, even a refusal, means Authalla is up.
-        reachable = err instanceof OAuthError;
-        console.error("authalla: revoking the grant at sign-out failed; signing out here anyway:", err);
-      }
-    }
-    const cookies = clearStoredSession(cfg, jar);
-    // Without Authalla its logout page would be the browser's error page, so
-    // the user stays here, signed out of the app.
-    return { cookies, location: reachable ? logoutUrl(cfg) : cfg.postLogoutRedirectUri };
+  // The session for a request the handler answers: cookies it stores go
+  // on the response.
+  function sessionFor(cfg: ResolvedConfig, jar: CookieJar) {
+    const out: CookieToSet[] = [];
+    return { session: requestSession(cfg, { jar, set: (cookies) => out.push(...cookies) }), out };
   }
 
   async function signOut(cfg: ResolvedConfig, request: Request, jar: CookieJar): Promise<Response> {
     if (!sameOrigin(cfg, request)) return json({ error: "forbidden" }, 403);
-    const { cookies, location } = await endSession(cfg, jar);
-    return redirect(location, cookies);
+    const { session, out } = sessionFor(cfg, jar);
+    const location = await session.signOut();
+    return redirect(location, out);
   }
 
   async function session(cfg: ResolvedConfig, jar: CookieJar): Promise<Response> {
-    const { stored, cookies } = await freshen(cfg, jar);
-    return json(toClientSession(stored), 200, cookies);
+    const { session, out } = sessionFor(cfg, jar);
+    await session.current();
+    return json(await session.client(), 200, out);
   }
 
   async function refresh(cfg: ResolvedConfig, request: Request, jar: CookieJar): Promise<Response> {
     if (!sameOrigin(cfg, request)) return json({ error: "forbidden" }, 403);
-    const { stored, cookies } = await freshen(cfg, jar, { force: true });
-    return json(toClientSession(stored), 200, cookies);
+    const { session, out } = sessionFor(cfg, jar);
+    await session.current({ force: true });
+    return json(await session.client(), 200, out);
   }
 
   async function userApi(cfg: ResolvedConfig, request: Request, jar: CookieJar, path: string): Promise<Response> {
@@ -240,48 +219,32 @@ export function createCore(options: AuthallaOptions = {}) {
     if (request.method !== "GET" && request.method !== "HEAD" && !sameOrigin(cfg, request)) {
       return json({ error: "forbidden", message: "Cross-site request refused" }, 403);
     }
-    const fresh = await freshen(cfg, jar);
-    const { stored } = fresh;
-    let { cookies } = fresh;
-    if (!stored || isEnded(stored)) {
-      return json({ error: "unauthorized", message: "Not signed in" }, 401, cookies);
-    }
-    const url = new URL(request.url);
     const hasBody = request.method !== "GET" && request.method !== "HEAD" && request.method !== "DELETE";
     let body: string | undefined;
     try {
       body = hasBody ? await readLimited(request, MAX_USER_API_BODY) : undefined;
     } catch (err) {
-      if (err instanceof BodyTooLarge) return json({ error: "too_large", message: "The request body is too large" }, 413, cookies);
+      if (err instanceof BodyTooLarge) return json({ error: "too_large", message: "The request body is too large" }, 413);
       throw err;
     }
+    const { session, out } = sessionFor(cfg, jar);
     let upstream: Response;
     try {
-      upstream = await fetch(`${cfg.issuer}/me/v1${path}${url.search}`, {
+      upstream = await session.callUserApi({
         method: request.method,
-        headers: {
-          Authorization: `Bearer ${stored.accessToken}`,
-          Accept: "application/json",
-          ...(hasBody ? { "Content-Type": request.headers.get("Content-Type") ?? "application/json" } : {}),
-        },
+        path,
+        search: new URL(request.url).search,
         body,
-        cache: "no-store",
-        signal: AbortSignal.timeout(10_000),
+        contentType: request.headers.get("Content-Type") ?? undefined,
       });
     } catch (err) {
       console.error("authalla: the User API couldn't be reached:", err);
-      return json({ error: "unreachable", message: "Authalla couldn't be reached" }, 502, cookies);
-    }
-    // A profile change shows in the ID token only once it's reissued, so
-    // the session is refreshed straight away and auth() sees the new name.
-    if (upstream.ok && path === "" && request.method === "PATCH") {
-      const refreshed = await freshen(cfg, applyToJar(jar, cookies), { force: true });
-      cookies = [...cookies, ...refreshed.cookies];
+      return json({ error: "unreachable", message: "Authalla couldn't be reached" }, 502, out);
     }
     const headers: Record<string, string> = { ...USER_API_HEADERS };
     const contentType = upstream.headers.get("Content-Type");
     if (contentType) headers["Content-Type"] = contentType;
-    return respond(upstream.status === 204 ? null : await upstream.arrayBuffer(), { status: upstream.status, headers }, cookies);
+    return respond(upstream.status === 204 ? null : await upstream.arrayBuffer(), { status: upstream.status, headers }, out);
   }
 
   /** Handles every request under basePath. */
@@ -310,24 +273,27 @@ export function createCore(options: AuthallaOptions = {}) {
 
   return {
     handle,
-    config,
-    /** The session from a request's cookies, without refreshing it. */
-    async readSession(cookieHeader: string | null | undefined, requestUrl?: string) {
-      return readStoredSession(config(requestUrl), parseCookieHeader(cookieHeader));
+    /**
+     * The session for a request whose cookies the framework hands over:
+     * read, refreshed where cookies can be stored, signed out, and the User
+     * API. requestUrl is the fallback for appUrl outside production.
+     */
+    session(cookies: RequestCookies, requestUrl?: string) {
+      return requestSession(config(requestUrl), cookies);
     },
     /**
-     * Signs out from the server: the cookies to set and where to send the
-     * browser. The caller must have checked the request is this app's own
-     * (a Server Action is).
+     * For a framework's proxy (middleware): refreshes the session before a
+     * page renders. Returns the cookies to set on the response and the
+     * Cookie header the page should see; no cookies when nothing changed.
      */
-    async signOut(cookieHeader: string | null | undefined, requestUrl?: string) {
-      return endSession(config(requestUrl), parseCookieHeader(cookieHeader));
-    },
-    /** Refreshes the session if its access token is about to expire. */
-    async freshen(cookieHeader: string | null | undefined, opts?: { force?: boolean }, requestUrl?: string) {
-      const jar = parseCookieHeader(cookieHeader);
-      const result = await freshen(config(requestUrl), jar, opts);
-      return { ...result, jar: applyToJar(jar, result.cookies) };
+    async refreshRequest(request: Request): Promise<{ cookies: CookieToSet[]; cookieHeader: string }> {
+      const out: CookieToSet[] = [];
+      const session = requestSession(config(request.url), {
+        jar: parseCookieHeader(request.headers.get("Cookie")),
+        set: (cookies) => out.push(...cookies),
+      });
+      await session.current();
+      return { cookies: out, cookieHeader: jarToHeader(session.jar()) };
     },
   };
 }

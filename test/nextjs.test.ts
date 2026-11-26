@@ -118,6 +118,35 @@ describe("auth", () => {
   });
 });
 
+describe("userApi on the server", () => {
+  it("calls the User API as the signed-in user", async () => {
+    await signIn();
+    for (const [k, v] of browser.cookies) request.cookies.set(k, v);
+    expect(await createAuthalla(options).userApi.getMe()).toMatchObject({ id: "usr_1", name: "Jane Doe" });
+  });
+
+  it("stores the refreshed session after a name change in a Server Action", async () => {
+    await signIn();
+    for (const [k, v] of browser.cookies) request.cookies.set(k, v);
+    const client = createAuthalla(options);
+    await client.userApi.updateMe({ name: "Jane Smith" });
+    expect((await client.auth())?.user.name).toBe("Jane Smith");
+  });
+
+  it("throws UserApiError 401 when nobody is signed in", async () => {
+    await expect(createAuthalla(options).userApi.getMe()).rejects.toMatchObject({ name: "AuthallaUserApiError", status: 401 });
+  });
+});
+
+describe("getAccessToken", () => {
+  it("refuses force in a Server Component instead of silently not refreshing", async () => {
+    await signIn();
+    for (const [k, v] of browser.cookies) request.cookies.set(k, v);
+    request.writable = false;
+    await expect(createAuthalla(options).getAccessToken({ force: true })).rejects.toThrow(/Server Action or Route Handler/);
+  });
+});
+
 describe("requireSession", () => {
   it("comes back to the page the proxy saw when given no returnTo", async () => {
     const client = createAuthalla(options);

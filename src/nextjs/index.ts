@@ -13,11 +13,11 @@ import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { NextResponse, type NextRequest } from "next/server";
 import { basePathOf, type AuthallaOptions } from "../core/config.js";
-import { jarToHeader, type CookieToSet } from "../core/cookies.js";
+import type { CookieToSet } from "../core/cookies.js";
 import { createCore } from "../core/handler.js";
 import { signInPath, type SignInOptions } from "../core/sign-in-path.js";
-import { isEnded, toClientSession, toSession, type ClientSession, type Session } from "../core/session.js";
-import { createUserApi, UserApiError, type UserApi } from "../core/user-api.js";
+import type { ClientSession, Session } from "../core/session.js";
+import { createUserApi, type UserApi } from "../core/user-api.js";
 
 export type { AuthallaOptions } from "../core/config.js";
 export type { SignInParams } from "../core/oauth.js";
@@ -38,13 +38,6 @@ function pagePath(url: URL): string {
   search.delete("_rsc"); // Next.js's cache key for client navigations
   const query = search.toString();
   return `${url.pathname}${query ? `?${query}` : ""}`;
-}
-
-function cookieHeader(store: CookieStore): string {
-  return store
-    .getAll()
-    .map(({ name, value }) => `${name}=${encodeURIComponent(value)}`)
-    .join("; ");
 }
 
 // The request's own URL, only for the development fallback of appUrl.
@@ -74,22 +67,18 @@ export function createAuthalla(options: AuthallaOptions = {}) {
   const core = createCore(options);
   const handle = (request: Request) => core.handle(request);
 
-  // The stored session, with an access token good for at least a minute
-  // where cookies can be set (Server Actions, Route Handlers). There a
-  // refresh also finds out if the grant was revoked, which matters in Route
-  // Handlers the proxy leaves out. A Server Component reads it as it is:
-  // refreshing there would rotate the refresh token without storing the new
-  // one, and the browser's next request would present the old one, which
-  // Authalla treats as theft and ends the session. The proxy keeps pages fresh.
-  async function current(opts?: { force?: boolean }) {
+  // The session for this request, through Next's cookies(): core refreshes
+  // it where cookies can be set (Server Actions, Route Handlers) and only
+  // reads it in Server Components.
+  async function session() {
     const store = await cookies();
-    if (!canSetCookies(store)) {
-      const stored = await core.readSession(cookieHeader(store), await currentUrl());
-      return stored && !isEnded(stored) ? stored : undefined;
-    }
-    const result = await core.freshen(cookieHeader(store), opts, await currentUrl());
-    setAll(store, result.cookies);
-    return result.stored && !isEnded(result.stored) ? result.stored : undefined;
+    return core.session(
+      {
+        jar: new Map(store.getAll().map(({ name, value }) => [name, value])),
+        set: canSetCookies(store) ? (toSet) => setAll(store, toSet) : undefined,
+      },
+      await currentUrl(),
+    );
   }
 
   /**
@@ -99,8 +88,7 @@ export function createAuthalla(options: AuthallaOptions = {}) {
    * the proxy has done that.
    */
   async function auth(): Promise<Session | null> {
-    const stored = await current();
-    return stored ? toSession(stored) : null;
+    return (await session()).current();
   }
 
   /**
@@ -108,7 +96,7 @@ export function createAuthalla(options: AuthallaOptions = {}) {
    * or signed out (and whether it ended rather than being signed out).
    */
   async function clientSession(): Promise<ClientSession> {
-    return toClientSession(await core.readSession(cookieHeader(await cookies()), await currentUrl()));
+    return (await session()).client();
   }
 
   /**
@@ -125,73 +113,58 @@ export function createAuthalla(options: AuthallaOptions = {}) {
    * by default the current page, which the proxy passes on, or / without it.
    */
   async function requireSession(returnTo?: string): Promise<Session> {
-    const session = await auth();
-    if (session) return session;
+    const current = await auth();
+    if (current) return current;
     redirect(signInUrl({ returnTo: returnTo ?? (await headers()).get(PATH_HEADER) ?? "/" }));
   }
 
   /**
    * Signs out from a Server Action or Route Handler: ends the grant, clears
    * the session, then sends the browser to Authalla's logout and back.
+   * Throws in a Server Component, which can't clear the cookie.
    */
   async function signOut(): Promise<never> {
-    const store = await cookies();
-    if (!canSetCookies(store)) {
+    const s = await session();
+    if (!s.canStore) {
       throw new Error("authalla.signOut() must run in a Server Action or Route Handler, where cookies can be changed.");
     }
-    const { cookies: toSet, location } = await core.signOut(cookieHeader(store), await currentUrl());
-    setAll(store, toSet);
-    redirect(location);
+    redirect(await s.signOut());
   }
 
   /**
    * An access token with at least a minute left, refreshed if needed, for
-   * calling Authalla's APIs or your own. null when nobody is signed in.
+   * calling Authalla's APIs or your own. null when nobody is signed in. In
+   * a Server Component it's the stored token, and force throws.
    */
   async function getAccessToken(opts?: { force?: boolean }): Promise<string | null> {
-    const stored = await current(opts);
-    if (!stored) return null;
-    if (stored.expiresAt < Date.now()) {
+    const current = await (await session()).current(opts);
+    if (!current) return null;
+    if (current.expiresAt < Date.now()) {
       console.warn("authalla: the access token has expired and couldn't be refreshed. Server Components rely on authalla.proxy in proxy.ts to refresh it.");
     }
-    return stored.accessToken;
+    return current.accessToken;
   }
 
   /**
    * The User API for the signed-in user, from the server: Server Actions,
    * Route Handlers and Server Components.
    */
-  const userApi: UserApi = createUserApi(async (method, path, body) => {
-    const token = await getAccessToken();
-    if (!token) throw new UserApiError(401, "unauthorized", "Not signed in");
-    const { issuer } = core.config(await currentUrl());
-    const response = await fetch(`${issuer}/me/v1${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json",
-        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      cache: "no-store",
-      signal: AbortSignal.timeout(10_000),
-    });
-    // The new name reaches the ID token only when it's reissued.
-    if (response.ok && method === "PATCH" && path === "") await getAccessToken({ force: true });
-    return response;
-  });
+  const userApi: UserApi = createUserApi(async (method, path, body) =>
+    (await session()).callUserApi({ method, path, body: body === undefined ? undefined : JSON.stringify(body) }),
+  );
 
   /**
    * Next.js proxy (proxy.ts) that refreshes the session before a page
-   * renders, so Server Components read fresh tokens. Leave the route
-   * handler's path out of its matcher; it refreshes for itself.
+   * renders, so Server Components read fresh tokens, and passes the page's
+   * path on for requireSession(). Leave the route handler's path out of its
+   * matcher; it refreshes for itself.
    */
   async function proxy(request: NextRequest): Promise<NextResponse> {
     const forwarded = new Headers(request.headers);
     forwarded.set(PATH_HEADER, pagePath(new URL(request.url)));
-    let result: Awaited<ReturnType<typeof core.freshen>>;
+    let result: Awaited<ReturnType<typeof core.refreshRequest>>;
     try {
-      result = await core.freshen(request.headers.get("cookie"), undefined, request.url);
+      result = await core.refreshRequest(request);
     } catch (err) {
       console.error("authalla: the proxy couldn't check the session:", err);
       return NextResponse.next({ request: { headers: forwarded } });
@@ -199,7 +172,7 @@ export function createAuthalla(options: AuthallaOptions = {}) {
     if (result.cookies.length === 0) return NextResponse.next({ request: { headers: forwarded } });
     // The page renders from the request's cookies, so it gets the new ones
     // too, and the browser gets them on the response.
-    forwarded.set("cookie", jarToHeader(result.jar));
+    forwarded.set("cookie", result.cookieHeader);
     const response = NextResponse.next({ request: { headers: forwarded } });
     for (const { name, value, options } of result.cookies) response.cookies.set(name, value, options);
     return response;

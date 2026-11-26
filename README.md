@@ -360,7 +360,7 @@ The redirect URI is `appUrl` plus `basePath` plus `/callback`. Cookies are `Secu
 | `proxy` | | For `proxy.ts`. Refreshes the tokens before a page renders, and passes the page's path to `requireSession()`. Leave the route handler's path out of its matcher. |
 | `auth()` | `Session \| null` | The signed-in session. In Server Actions and Route Handlers, refreshes an access token that expires within a minute. |
 | `requireSession(returnTo?)` | `Session` | The session, or a redirect to sign-in that comes back to `returnTo`. The default is the current page with the proxy, and `/` without it. |
-| `getAccessToken({ force? })` | `string \| null` | An access token valid for at least a minute, refreshed if needed. `force` refreshes now. In a Server Component, returns the stored token. |
+| `getAccessToken({ force? })` | `string \| null` | An access token valid for at least a minute, refreshed if needed. `force` refreshes now. In a Server Component, returns the stored token, and `force` throws. |
 | `userApi` | | The [User API](#user-api) as the signed-in user. |
 | `signInUrl(options?)` | `string` | The path that starts a sign-in. Takes the [sign-in options](#sign-in-options). |
 | `signOut()` | `never` | Revokes the tokens, clears the cookie, and redirects to Authalla's logout. Server Actions and Route Handlers only. |
