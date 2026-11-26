@@ -2,7 +2,7 @@
 
 Add [Authalla](https://authalla.com) sign-in to a Next.js 16 app that uses the App Router.
 
-- Users sign in on your tenant's sign-in page with whatever methods the tenant has turned on: email codes, passkeys, and social and enterprise logins.
+- Users sign in on your Authalla sign-in page with the methods your tenant has turned on, such as email codes, passkeys, and social and enterprise logins.
 - You get the signed-in user from `auth()` on the server and from `useAuth()` in Client Components.
 - The tokens stay on your server, in an encrypted cookie that the browser can't read.
 - The User API client lets users manage their own account: their name, their signed-in devices, the apps they connected, and their passkeys.
@@ -94,7 +94,7 @@ It needs Next.js 16 or later, React 19, and Node.js 20.9 or later.
    }
    ```
 
-Click **Sign in**. Your tenant's sign-in page opens, and after you sign in you come back to the same page.
+Click **Sign in**. Your Authalla sign-in page opens. After you sign in, you come back to the same page.
 
 ## Guides
 
@@ -160,7 +160,7 @@ export function Header() {
 }
 ```
 
-`user` has `name`, `email`, `picture`, `id`, and more. See [`SessionUser`](#types). To link the user to your own data, use `user.id`, because the email can change.
+`user` has `id`, `name`, `email`, `emailVerified`, `picture`, and `claims`. See [`SessionUser`](#types). To link the user to your own data, use `user.id`, because the email can change.
 
 `status` is `"loading"` until the session arrives from the layout. To show the user on the first render instead, call `useAuth({ suspense: true })` in a component inside `<Suspense>`:
 
@@ -260,7 +260,7 @@ The User API reads and changes the signed-in user's own Authalla account. `userA
    }
    ```
 
-If your API is an Authalla resource server, such as an MCP server, AI agents like Claude and ChatGPT register themselves and ask the user for consent to call it. `listConnectedApps()` shows the user which agents can act for them, and `revokeConnectedApp(id)` cuts one off:
+If your API is an Authalla resource server, such as an MCP server, AI agents like Claude and ChatGPT register themselves and ask the user for consent to call it. `listConnectedApps()` lists the agents that can act for the user. `revokeConnectedApp(id)` revokes an agent's tokens and consent:
 
 ```ts
 const { connected_apps } = await authalla.userApi.listConnectedApps();
@@ -271,7 +271,7 @@ For every call and the scope it needs, see [User API](#user-api).
 
 ### Add passkeys
 
-Call `addPasskey()`. It sends the user to your Authalla sign-in page to create a passkey, and then back. For the reason, see [Why passkeys are created on Authalla's page](#why-passkeys-are-created-on-authallas-page).
+Call `addPasskey()`. It sends the user to your Authalla sign-in page to create a passkey, and then back. For the reason, see [Why passkeys are created on the Authalla sign-in page](#why-passkeys-are-created-on-the-authalla-sign-in-page).
 
 ```tsx
 const { addPasskey } = useAuth();
@@ -449,7 +449,7 @@ type Session = {                   // server only
   user: SessionUser;
   accessToken: string;
   idToken: string;
-  expiresAt: number;               // when the access token expires, in ms since the epoch
+  expiresAt: number;               // when the access token expires, in milliseconds since the epoch
   scopes: string[];
 };
 
@@ -472,15 +472,15 @@ Both `@authalla/nextjs` and `@authalla/nextjs/client` also export `Me`, `UserSes
 
 ### Why the tokens stay on the server
 
-Any script that runs on your page can steal a token that the browser holds. So the SDK follows the backend-for-frontend pattern from the OAuth 2.0 for Browser-Based Apps best practice: your server holds the tokens, and the browser holds only a cookie.
+Any script that runs on your page can steal a token that the browser holds. So the SDK follows the backend-for-frontend pattern from the OAuth 2.0 for Browser-Based Apps best practice. Your server holds the tokens, and the browser holds only a cookie.
 
-- The access, refresh, and ID tokens live in an encrypted, `httpOnly`, `SameSite=Lax` cookie for up to 30 days. Over `https://`, the cookie is also `Secure`.
+- The access, refresh, and ID tokens are stored in an encrypted, `httpOnly`, `SameSite=Lax` cookie for up to 30 days. Over `https://`, the cookie is also `Secure`.
 - Sign-in uses PKCE, `state`, and a `nonce`. A separate, short-lived encrypted cookie holds them.
 - `returnTo` accepts only paths on your app, so nobody can use your sign-in links to redirect users to another site.
 - The route handler refuses sign-out, refresh, and User API changes from other origins.
 - When an admin revokes a session at Authalla, the user is signed out the next time the tokens are refreshed. The proxy refreshes them shortly before the access token expires.
 
-### Why passkeys are created on Authalla's page
+### Why passkeys are created on the Authalla sign-in page
 
 The browser binds each passkey to the domain of the page that creates it, and offers the passkey only on that domain. Users sign in on your Authalla sign-in page, so their passkeys have to be created there. A custom domain doesn't change that. If users sign in on `login.customer.com`, their passkeys belong to `login.customer.com`, and a page on `customer.com` can't create them.
 
