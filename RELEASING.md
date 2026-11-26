@@ -6,10 +6,15 @@ npm trusts that workflow in this repo through GitHub's OIDC token, so there
 is no npm token in GitHub, and every version gets a provenance attestation
 linking it to the commit it was built from.
 
-The workflow stops if the tag doesn't match `package.json`'s version, and
-publishes nothing if that version is already on npm, so re-running it is
-safe. It runs the tests, typecheck, lint and build, and checks that the
-package holds only `dist/`, the README, the changelog and the license.
+The workflow stops if the tag doesn't match `package.json`'s version or
+isn't on `main`. It publishes nothing if that version is already on npm,
+so you can re-run it. It runs the tests, typecheck, lint, and build, and
+checks that the package holds only `dist/`, the README, the changelog, and
+the license.
+
+The tests and the build run in a job that can't publish. A separate
+`publish` job, the only one allowed to request an OIDC token, publishes
+the tarball that the first job built.
 
 ## One-time setup (an npm owner of `@authalla`)
 
@@ -41,9 +46,19 @@ package holds only `dist/`, the README, the changelog and the license.
 4. **Lock it down** (recommended, on the same page): under Publishing
    access, choose "Require two-factor authentication and disallow tokens".
    Trusted publishing still works, and no token can publish the package.
-5. **The `npm` environment** (optional): GitHub creates it on the first
-   release run. To require an approval before each publish, add yourself as
-   a required reviewer under the repo's Settings → Environments → npm.
+5. **The `npm` environment.** Under the repo's **Settings > Environments**,
+   create `npm`. Add yourself as a required reviewer, so that every publish
+   waits for your approval. Under **Deployment branches and tags**, allow
+   only tags that match `v*`.
+6. **Protect the tags.** Under **Settings > Rules > Rulesets**, add a tag
+   ruleset for `v*` that restricts creation, update, and deletion to
+   admins. Without it, anyone with write access can publish by pushing a
+   tag.
+7. **Protect `main`.** Add a branch ruleset for `main` that requires a pull
+   request and the CI checks `check` and `example`. A release publishes
+   only commits on `main`.
+8. **Require 2FA** for the `Authalla` GitHub organization, under the org's
+   **Settings > Authentication security**.
 
 ## Each release
 
