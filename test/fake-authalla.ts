@@ -24,7 +24,7 @@ type Grant = { refreshToken: string; revoked: boolean };
 let issued = 0;
 
 export class FakeAuthalla {
-  user = { sub: "usr_1", name: "Jane Doe", email: "jane@example.com" };
+  user = { sub: "usr_1", name: "Jane Doe", email: "jane@example.com", picture: "https://images.example.com/jane.png" };
   calls: { url: URL; method: string; headers: Headers; body: string }[] = [];
   expiresIn = 3600;
   /** Override the next token response's nonce, to test a mismatch. */
@@ -75,6 +75,7 @@ export class FakeAuthalla {
       name: this.user.name,
       email: this.user.email,
       email_verified: true,
+      picture: this.user.picture,
       ...this.extraClaims,
     };
     if (nonce !== undefined) idClaims.nonce = this.nonceOverride ?? nonce;

@@ -14,6 +14,8 @@ export type SessionUser = {
   name?: string;
   email?: string;
   emailVerified?: boolean;
+  /** The user's picture, from their social login's profile, when there is one. Needs the profile scope. */
+  picture?: string;
   /** Every claim of the latest ID token. */
   claims: Record<string, unknown>;
 };
@@ -132,12 +134,24 @@ export function toClientSession(stored: StoredSession | undefined): ClientSessio
   return { status: "signed-in", user, expiresAt, scopes };
 }
 
+// Only an http(s) address, since apps put it straight into <img src> or a link.
+function webUrl(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "https:" || protocol === "http:" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function userFromClaims(claims: Record<string, unknown>): SessionUser {
   return {
     id: String(claims.sub),
     name: typeof claims.name === "string" && claims.name ? claims.name : undefined,
     email: typeof claims.email === "string" ? claims.email : undefined,
     emailVerified: typeof claims.email_verified === "boolean" ? claims.email_verified : undefined,
+    picture: webUrl(claims.picture),
     claims,
   };
 }

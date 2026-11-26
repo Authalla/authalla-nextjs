@@ -11,20 +11,12 @@
 
 import { ERROR_DESCRIPTION_PARAM, ERROR_PARAM, ERROR_PROMPT_PARAM } from "./constants.js";
 import { resolveConfig, type AuthallaOptions, type ResolvedConfig } from "./config.js";
-import { applyToJar, cookieName, parseCookieHeader, serializeCookie, type CookieJar, type CookieToSet } from "./cookies.js";
-import { authorizationUrl, exchangeCode, logoutUrl, OAuthError, revoke, type SignInParams } from "./oauth.js";
+import { cookieName, jarToHeader, parseCookieHeader, serializeCookie, type CookieJar, type CookieToSet } from "./cookies.js";
+import { authorizationUrl, exchangeCode, OAuthError, type SignInParams } from "./oauth.js";
+import { requestSession, type RequestCookies } from "./request-session.js";
 import { readSignInParams } from "./sign-in-path.js";
 import { randomString, seal, sha256Base64Url, unseal } from "./seal.js";
-import {
-  clearStoredSession,
-  cookieOptions,
-  freshen,
-  isEnded,
-  readStoredSession,
-  storedFromTokens,
-  toClientSession,
-  writeStoredSession,
-} from "./session.js";
+import { cookieOptions, storedFromTokens, writeStoredSession } from "./session.js";
 
 type PendingSignIn = { state: string; verifier: string; nonce: string; returnTo: string; prompt?: SignInParams["prompt"] };
 
@@ -53,14 +45,63 @@ function redirect(location: string, cookies: CookieToSet[] = [], status = 303): 
   return respond(null, { status, headers: { Location: location } }, cookies);
 }
 
+// The User API's paths are plain segments (/passkeys/pk_123): nothing
+// encoded, so no %2F or %5C can reach another path at Authalla.
+const USER_API_PATH = /^(\/[A-Za-z0-9_-][A-Za-z0-9._~-]*)*$/;
+const MAX_USER_API_BODY = 64 * 1024;
+
+// The User API answers JSON. Served from the app's origin, it must never be
+// read as a page, whatever Content-Type comes back.
+const USER_API_HEADERS = {
+  "X-Content-Type-Options": "nosniff",
+  "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; sandbox",
+};
+
+class BodyTooLarge extends Error {}
+
+// readLimited reads a request body, refusing more than max bytes, also when
+// no Content-Length says so up front.
+async function readLimited(request: Request, max: number): Promise<string> {
+  if (Number(request.headers.get("Content-Length") ?? 0) > max) throw new BodyTooLarge();
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      throw new BodyTooLarge();
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+// A path a browser reads as another site: //evil.example or /\evil.example.
+function isSchemeRelative(path: string): boolean {
+  return path.startsWith("//") || path.startsWith("/\\");
+}
+
 // safeReturnTo keeps a sign-in's destination on this app: only a path, so a
-// crafted link can't use the sign-in to send the user to another site.
+// crafted link can't use the sign-in to send the user to another site. The
+// check runs on the path as normalized too, because /.//evil.example
+// normalizes to //evil.example.
 export function safeReturnTo(config: ResolvedConfig, returnTo: string | null | undefined): string {
-  if (!returnTo || !returnTo.startsWith("/") || returnTo.startsWith("//") || returnTo.startsWith("/\\")) return "/";
+  if (!returnTo || !returnTo.startsWith("/") || isSchemeRelative(returnTo)) return "/";
   try {
     const url = new URL(returnTo, config.appUrl);
     if (url.origin !== new URL(config.appUrl).origin) return "/";
-    return `${url.pathname}${url.search}${url.hash}`;
+    const path = `${url.pathname}${url.search}${url.hash}`;
+    return isSchemeRelative(path) ? "/" : path;
   } catch {
     return "/";
   }
@@ -146,85 +187,64 @@ export function createCore(options: AuthallaOptions = {}) {
     }
   }
 
-  // endSession revokes the grant and clears the session, and says where to
-  // send the browser: Authalla's logout, which comes back to the app.
-  async function endSession(cfg: ResolvedConfig, jar: CookieJar): Promise<{ cookies: CookieToSet[]; location: string }> {
-    const stored = await readStoredSession(cfg, jar);
-    let reachable = true;
-    if (stored && !isEnded(stored)) {
-      try {
-        // Ending the grant first means the tokens stop working even if the
-        // browser never reaches Authalla's logout below.
-        if (stored.refreshToken) await revoke(cfg, stored.refreshToken, "refresh_token");
-        else await revoke(cfg, stored.accessToken, "access_token");
-      } catch (err) {
-        // An answer, even a refusal, means Authalla is up.
-        reachable = err instanceof OAuthError;
-        console.error("authalla: revoking the grant at sign-out failed; signing out here anyway:", err);
-      }
-    }
-    const cookies = clearStoredSession(cfg, jar);
-    // Without Authalla its logout page would be the browser's error page, so
-    // the user stays here, signed out of the app.
-    return { cookies, location: reachable ? logoutUrl(cfg) : cfg.postLogoutRedirectUri };
+  // The session for a request the handler answers: cookies it stores go
+  // on the response.
+  function sessionFor(cfg: ResolvedConfig, jar: CookieJar) {
+    const out: CookieToSet[] = [];
+    return { session: requestSession(cfg, { jar, set: (cookies) => out.push(...cookies) }), out };
   }
 
   async function signOut(cfg: ResolvedConfig, request: Request, jar: CookieJar): Promise<Response> {
     if (!sameOrigin(cfg, request)) return json({ error: "forbidden" }, 403);
-    const { cookies, location } = await endSession(cfg, jar);
-    return redirect(location, cookies);
+    const { session, out } = sessionFor(cfg, jar);
+    const location = await session.signOut();
+    return redirect(location, out);
   }
 
   async function session(cfg: ResolvedConfig, jar: CookieJar): Promise<Response> {
-    const { stored, cookies } = await freshen(cfg, jar);
-    return json(toClientSession(stored), 200, cookies);
+    const { session, out } = sessionFor(cfg, jar);
+    await session.current();
+    return json(await session.client(), 200, out);
   }
 
   async function refresh(cfg: ResolvedConfig, request: Request, jar: CookieJar): Promise<Response> {
     if (!sameOrigin(cfg, request)) return json({ error: "forbidden" }, 403);
-    const { stored, cookies } = await freshen(cfg, jar, { force: true });
-    return json(toClientSession(stored), 200, cookies);
+    const { session, out } = sessionFor(cfg, jar);
+    await session.current({ force: true });
+    return json(await session.client(), 200, out);
   }
 
   async function userApi(cfg: ResolvedConfig, request: Request, jar: CookieJar, path: string): Promise<Response> {
+    if (!USER_API_PATH.test(path)) return json({ error: "not_found" }, 404);
     if (request.method !== "GET" && request.method !== "HEAD" && !sameOrigin(cfg, request)) {
       return json({ error: "forbidden", message: "Cross-site request refused" }, 403);
     }
-    const fresh = await freshen(cfg, jar);
-    const { stored } = fresh;
-    let { cookies } = fresh;
-    if (!stored || isEnded(stored)) {
-      return json({ error: "unauthorized", message: "Not signed in" }, 401, cookies);
-    }
-    const url = new URL(request.url);
     const hasBody = request.method !== "GET" && request.method !== "HEAD" && request.method !== "DELETE";
+    let body: string | undefined;
+    try {
+      body = hasBody ? await readLimited(request, MAX_USER_API_BODY) : undefined;
+    } catch (err) {
+      if (err instanceof BodyTooLarge) return json({ error: "too_large", message: "The request body is too large" }, 413);
+      throw err;
+    }
+    const { session, out } = sessionFor(cfg, jar);
     let upstream: Response;
     try {
-      upstream = await fetch(`${cfg.issuer}/me/v1${path}${url.search}`, {
+      upstream = await session.callUserApi({
         method: request.method,
-        headers: {
-          Authorization: `Bearer ${stored.accessToken}`,
-          Accept: "application/json",
-          ...(hasBody ? { "Content-Type": request.headers.get("Content-Type") ?? "application/json" } : {}),
-        },
-        body: hasBody ? await request.text() : undefined,
-        cache: "no-store",
-        signal: AbortSignal.timeout(10_000),
+        path,
+        search: new URL(request.url).search,
+        body,
+        contentType: request.headers.get("Content-Type") ?? undefined,
       });
     } catch (err) {
       console.error("authalla: the User API couldn't be reached:", err);
-      return json({ error: "unreachable", message: "Authalla couldn't be reached" }, 502, cookies);
+      return json({ error: "unreachable", message: "Authalla couldn't be reached" }, 502, out);
     }
-    // A profile change shows in the ID token only once it's reissued, so
-    // the session is refreshed straight away and auth() sees the new name.
-    if (upstream.ok && path === "" && request.method === "PATCH") {
-      const refreshed = await freshen(cfg, applyToJar(jar, cookies), { force: true });
-      cookies = [...cookies, ...refreshed.cookies];
-    }
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = { ...USER_API_HEADERS };
     const contentType = upstream.headers.get("Content-Type");
     if (contentType) headers["Content-Type"] = contentType;
-    return respond(upstream.status === 204 ? null : await upstream.arrayBuffer(), { status: upstream.status, headers }, cookies);
+    return respond(upstream.status === 204 ? null : await upstream.arrayBuffer(), { status: upstream.status, headers }, out);
   }
 
   /** Handles every request under basePath. */
@@ -253,24 +273,27 @@ export function createCore(options: AuthallaOptions = {}) {
 
   return {
     handle,
-    config,
-    /** The session from a request's cookies, without refreshing it. */
-    async readSession(cookieHeader: string | null | undefined, requestUrl?: string) {
-      return readStoredSession(config(requestUrl), parseCookieHeader(cookieHeader));
+    /**
+     * The session for a request whose cookies the framework hands over:
+     * read, refreshed where cookies can be stored, signed out, and the User
+     * API. requestUrl is the fallback for appUrl outside production.
+     */
+    session(cookies: RequestCookies, requestUrl?: string) {
+      return requestSession(config(requestUrl), cookies);
     },
     /**
-     * Signs out from the server: the cookies to set and where to send the
-     * browser. The caller must have checked the request is this app's own
-     * (a Server Action is).
+     * For a framework's proxy (middleware): refreshes the session before a
+     * page renders. Returns the cookies to set on the response and the
+     * Cookie header the page should see; no cookies when nothing changed.
      */
-    async signOut(cookieHeader: string | null | undefined, requestUrl?: string) {
-      return endSession(config(requestUrl), parseCookieHeader(cookieHeader));
-    },
-    /** Refreshes the session if its access token is about to expire. */
-    async freshen(cookieHeader: string | null | undefined, opts?: { force?: boolean }, requestUrl?: string) {
-      const jar = parseCookieHeader(cookieHeader);
-      const result = await freshen(config(requestUrl), jar, opts);
-      return { ...result, jar: applyToJar(jar, result.cookies) };
+    async refreshRequest(request: Request): Promise<{ cookies: CookieToSet[]; cookieHeader: string }> {
+      const out: CookieToSet[] = [];
+      const session = requestSession(config(request.url), {
+        jar: parseCookieHeader(request.headers.get("Cookie")),
+        set: (cookies) => out.push(...cookies),
+      });
+      await session.current();
+      return { cookies: out, cookieHeader: jarToHeader(session.jar()) };
     },
   };
 }

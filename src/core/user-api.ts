@@ -117,19 +117,3 @@ export function createUserApi(transport: UserApiTransport) {
     removePasskey: (id: string) => call<void>("DELETE", `/passkeys/${encodeURIComponent(id)}`),
   };
 }
-
-// directTransport calls Authalla's User API with an access token.
-export function directTransport(issuer: string, accessToken: () => Promise<string>): UserApiTransport {
-  return async (method, path, body) =>
-    fetch(`${issuer}/me/v1${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${await accessToken()}`,
-        Accept: "application/json",
-        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      cache: "no-store",
-      signal: AbortSignal.timeout(10_000),
-    });
-}

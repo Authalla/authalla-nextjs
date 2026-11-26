@@ -7,7 +7,7 @@ import { readSignInParams, signInPath } from "../src/core/sign-in-path.js";
 import { APP, Browser, CLIENT_ID, FakeAuthalla, ISSUER } from "./fake-authalla.js";
 
 // The request a Server Action sees: the browser's cookies, which it may change.
-const request = vi.hoisted(() => ({ cookies: new Map<string, string>(), writable: true }));
+const request = vi.hoisted(() => ({ cookies: new Map<string, string>(), writable: true, headers: {} as Record<string, string> }));
 
 vi.mock("next/headers", () => ({
   cookies: async () => ({
@@ -22,7 +22,7 @@ vi.mock("next/headers", () => ({
       request.cookies.delete(name);
     },
   }),
-  headers: async () => new Headers({ host: new URL(APP).host, "x-forwarded-proto": "https" }),
+  headers: async () => new Headers({ host: new URL(APP).host, "x-forwarded-proto": "https", ...request.headers }),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -66,6 +66,7 @@ beforeEach(() => {
   browser = new Browser(createCore(options).handle);
   request.cookies.clear();
   request.writable = true;
+  request.headers = {};
 });
 
 afterEach(() => {
@@ -88,6 +89,74 @@ describe("signInUrl", () => {
 
   it("is what requireSession() redirects to", async () => {
     expect(await redirectOf(createAuthalla(options).requireSession("/account"))).toBe(signInPath("/api/auth", { returnTo: "/account" }));
+  });
+});
+
+describe("auth", () => {
+  // A Route Handler under /api, which the proxy's matcher leaves out.
+  async function expireAndRevoke() {
+    await signIn();
+    for (const [k, v] of browser.cookies) request.cookies.set(k, v);
+    authalla.revokeAll();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 2 * 3600 * 1000);
+  }
+
+  it("sees a revoked grant in a Route Handler or Server Action, and stores that the session ended", async () => {
+    await expireAndRevoke();
+    expect(await createAuthalla(options).auth()).toBeNull();
+    expect(authalla.tokenCalls("refresh_token")).toHaveLength(1);
+    browser.cookies.set("__Host-authalla-session", request.cookies.get("__Host-authalla-session")!);
+    expect(await browser.session()).toEqual({ status: "signed-out", ended: true });
+  });
+
+  it("doesn't refresh in a Server Component, which couldn't store the new tokens", async () => {
+    await expireAndRevoke();
+    request.writable = false;
+    expect(await createAuthalla(options).auth()).not.toBeNull();
+    expect(authalla.tokenCalls("refresh_token")).toHaveLength(0);
+  });
+});
+
+describe("userApi on the server", () => {
+  it("calls the User API as the signed-in user", async () => {
+    await signIn();
+    for (const [k, v] of browser.cookies) request.cookies.set(k, v);
+    expect(await createAuthalla(options).userApi.getMe()).toMatchObject({ id: "usr_1", name: "Jane Doe" });
+  });
+
+  it("stores the refreshed session after a name change in a Server Action", async () => {
+    await signIn();
+    for (const [k, v] of browser.cookies) request.cookies.set(k, v);
+    const client = createAuthalla(options);
+    await client.userApi.updateMe({ name: "Jane Smith" });
+    expect((await client.auth())?.user.name).toBe("Jane Smith");
+  });
+
+  it("throws UserApiError 401 when nobody is signed in", async () => {
+    await expect(createAuthalla(options).userApi.getMe()).rejects.toMatchObject({ name: "AuthallaUserApiError", status: 401 });
+  });
+});
+
+describe("getAccessToken", () => {
+  it("refuses force in a Server Component instead of silently not refreshing", async () => {
+    await signIn();
+    for (const [k, v] of browser.cookies) request.cookies.set(k, v);
+    request.writable = false;
+    await expect(createAuthalla(options).getAccessToken({ force: true })).rejects.toThrow(/Server Action or Route Handler/);
+  });
+});
+
+describe("requireSession", () => {
+  it("comes back to the page the proxy saw when given no returnTo", async () => {
+    const client = createAuthalla(options);
+    const response = await client.proxy(new NextRequest(`${APP}/orders/42?tab=items&_rsc=abc`));
+    request.headers = forwardedHeaders(response);
+    expect(await redirectOf(client.requireSession())).toBe(signInPath("/api/auth", { returnTo: "/orders/42?tab=items" }));
+  });
+
+  it("comes back to / without the proxy", async () => {
+    expect(await redirectOf(createAuthalla(options).requireSession())).toBe(signInPath("/api/auth", { returnTo: "/" }));
   });
 });
 
@@ -116,7 +185,19 @@ describe("signOut on the server", () => {
   });
 });
 
+// The request headers Next.js passes on to the page after the proxy.
+function forwardedHeaders(response: Response): Record<string, string> {
+  const names = (response.headers.get("x-middleware-override-headers") ?? "").split(",").filter(Boolean);
+  return Object.fromEntries(names.map((name) => [name, response.headers.get(`x-middleware-request-${name}`) ?? ""]));
+}
+
 describe("proxy", () => {
+  it("passes the page's path on, replacing one the browser sent", async () => {
+    const forged = new NextRequest(`${APP}/account`, { headers: { "x-authalla-path": "/elsewhere" } });
+    const headers = forwardedHeaders(await createAuthalla(options).proxy(forged));
+    expect(headers["x-authalla-path"]).toBe("/account");
+  });
+
   function page(cookie: string) {
     return new NextRequest(`${APP}/account`, { headers: { cookie } });
   }

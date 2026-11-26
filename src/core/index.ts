@@ -6,11 +6,11 @@ export { ERROR_PARAM, ERROR_DESCRIPTION_PARAM } from "./constants.js";
 export { resolveConfig, basePathOf, ConfigError, DEFAULT_SCOPES, type AuthallaOptions, type ResolvedConfig } from "./config.js";
 export { OAuthError, type SignInParams } from "./oauth.js";
 export { signInPath, type SignInOptions } from "./sign-in-path.js";
-export { toSession, toClientSession, isEnded, type Session, type SessionUser, type ClientSession, type StoredSession } from "./session.js";
-export { serializeCookie, jarToHeader, type CookieToSet, type CookieOptions } from "./cookies.js";
+export { type Session, type SessionUser, type ClientSession } from "./session.js";
+export { type RequestCookies, type RequestSession, type UserApiCall } from "./request-session.js";
+export { parseCookieHeader, serializeCookie, type CookieJar, type CookieToSet, type CookieOptions } from "./cookies.js";
 export {
   createUserApi,
-  directTransport,
   UserApiError,
   type UserApi,
   type UserApiTransport,
