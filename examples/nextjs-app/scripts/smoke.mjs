@@ -17,7 +17,10 @@ const env = {
   AUTHALLA_SECRET: "smoke-test-secret-smoke-test-secret-0123",
 };
 
-const server = spawn("npx", ["next", "start", "-p", String(PORT)], { env, stdio: ["ignore", "pipe", "inherit"] });
+// Its own process group, so stopping it also stops next-server, which npx
+// starts as a child: left running, it holds the pipe open and the script
+// never exits.
+const server = spawn("npx", ["next", "start", "-p", String(PORT)], { env, stdio: ["ignore", "pipe", "inherit"], detached: true });
 let log = "";
 server.stdout.on("data", (chunk) => (log += chunk));
 
@@ -64,7 +67,8 @@ try {
   const signout = await fetch(`${APP}/api/auth/signout`, { method: "POST", headers: { Origin: "https://evil.example" }, redirect: "manual" });
   check("sign-out refuses another site", signout.status === 403, `status ${signout.status}`);
 } finally {
-  server.kill();
+  process.kill(-server.pid, "SIGTERM");
+  server.stdout.destroy();
 }
 
 if (failures.length) {
