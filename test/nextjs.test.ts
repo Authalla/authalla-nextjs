@@ -92,6 +92,32 @@ describe("signInUrl", () => {
   });
 });
 
+describe("auth", () => {
+  // A Route Handler under /api, which the proxy's matcher leaves out.
+  async function expireAndRevoke() {
+    await signIn();
+    for (const [k, v] of browser.cookies) request.cookies.set(k, v);
+    authalla.revokeAll();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 2 * 3600 * 1000);
+  }
+
+  it("sees a revoked grant in a Route Handler or Server Action, and stores that the session ended", async () => {
+    await expireAndRevoke();
+    expect(await createAuthalla(options).auth()).toBeNull();
+    expect(authalla.tokenCalls("refresh_token")).toHaveLength(1);
+    browser.cookies.set("__Host-authalla-session", request.cookies.get("__Host-authalla-session")!);
+    expect(await browser.session()).toEqual({ status: "signed-out", ended: true });
+  });
+
+  it("doesn't refresh in a Server Component, which couldn't store the new tokens", async () => {
+    await expireAndRevoke();
+    request.writable = false;
+    expect(await createAuthalla(options).auth()).not.toBeNull();
+    expect(authalla.tokenCalls("refresh_token")).toHaveLength(0);
+  });
+});
+
 describe("requireSession", () => {
   it("comes back to the page the proxy saw when given no returnTo", async () => {
     const client = createAuthalla(options);

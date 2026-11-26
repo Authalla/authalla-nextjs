@@ -74,14 +74,33 @@ export function createAuthalla(options: AuthallaOptions = {}) {
   const core = createCore(options);
   const handle = (request: Request) => core.handle(request);
 
+  // The stored session, with an access token good for at least a minute
+  // where cookies can be set (Server Actions, Route Handlers). There a
+  // refresh also finds out if the grant was revoked, which matters in Route
+  // Handlers the proxy leaves out. A Server Component reads it as it is:
+  // refreshing there would rotate the refresh token without storing the new
+  // one, and the browser's next request would present the old one, which
+  // Authalla treats as theft and ends the session. The proxy keeps pages fresh.
+  async function current(opts?: { force?: boolean }) {
+    const store = await cookies();
+    if (!canSetCookies(store)) {
+      const stored = await core.readSession(cookieHeader(store), await currentUrl());
+      return stored && !isEnded(stored) ? stored : undefined;
+    }
+    const result = await core.freshen(cookieHeader(store), opts, await currentUrl());
+    setAll(store, result.cookies);
+    return result.stored && !isEnded(result.stored) ? result.stored : undefined;
+  }
+
   /**
    * The signed-in session, or null. Works in Server Components, Server
-   * Actions and Route Handlers. It doesn't refresh tokens: the proxy does
-   * that before each page, and getAccessToken() does it on demand.
+   * Actions and Route Handlers. In Server Actions and Route Handlers it
+   * refreshes an access token that is about to expire; in Server Components
+   * the proxy has done that.
    */
   async function auth(): Promise<Session | null> {
-    const stored = await core.readSession(cookieHeader(await cookies()), await currentUrl());
-    return stored && !isEnded(stored) ? toSession(stored) : null;
+    const stored = await current();
+    return stored ? toSession(stored) : null;
   }
 
   /**
@@ -130,22 +149,12 @@ export function createAuthalla(options: AuthallaOptions = {}) {
    * calling Authalla's APIs or your own. null when nobody is signed in.
    */
   async function getAccessToken(opts?: { force?: boolean }): Promise<string | null> {
-    const store = await cookies();
-    if (!canSetCookies(store)) {
-      // Refreshing here would rotate the refresh token without storing the
-      // new one, and the browser's next request would present the old one,
-      // which Authalla treats as theft and ends the session. So a Server
-      // Component uses the token as it is; the proxy keeps it fresh.
-      const stored = await core.readSession(cookieHeader(store), await currentUrl());
-      if (!stored || isEnded(stored)) return null;
-      if (stored.expiresAt < Date.now()) {
-        console.warn("authalla: the access token has expired and a Server Component can't refresh it. Add authalla.proxy in proxy.ts.");
-      }
-      return stored.accessToken;
+    const stored = await current(opts);
+    if (!stored) return null;
+    if (stored.expiresAt < Date.now()) {
+      console.warn("authalla: the access token has expired and couldn't be refreshed. Server Components rely on authalla.proxy in proxy.ts to refresh it.");
     }
-    const result = await core.freshen(cookieHeader(store), opts, await currentUrl());
-    setAll(store, result.cookies);
-    return result.stored && !isEnded(result.stored) ? result.stored.accessToken : null;
+    return stored.accessToken;
   }
 
   /**
