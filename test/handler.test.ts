@@ -57,8 +57,14 @@ describe("sign-in", () => {
     expect(response.headers.get("Location")).toBe("/account");
     expect(await browser.session()).toMatchObject({
       status: "signed-in",
-      user: { id: "usr_1", name: "Jane Doe", email: "jane@example.com", emailVerified: true },
+      user: { id: "usr_1", name: "Jane Doe", email: "jane@example.com", emailVerified: true, picture: "https://images.example.com/jane.png" },
     });
+  });
+
+  it("leaves out a picture that isn't a web address, so it can't become a javascript: link", async () => {
+    authalla.user.picture = "javascript:alert(1)";
+    await signIn();
+    expect((await browser.session()).user.picture).toBeUndefined();
   });
 
   it("keeps the tokens out of the browser: sealed in the cookie, absent from /session", async () => {
