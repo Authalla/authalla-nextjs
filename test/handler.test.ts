@@ -111,7 +111,7 @@ describe("sign-in", () => {
     expect(new URL(response.headers.get("Location")!, APP).searchParams.get("authalla_error")).toBe("sign_in_expired");
   });
 
-  it.each(["//evil.example/x", "https://evil.example/x", "/\\evil.example", "javascript:alert(1)"])(
+  it.each(["//evil.example/x", "https://evil.example/x", "/\\evil.example", "javascript:alert(1)", "/.//evil.example", "/a/..//evil.example", "/%2e//evil.example", "/./\\evil.example"])(
     "never returns to another site after signing in (returnTo=%s)",
     async (returnTo) => {
       const response = await signIn(`returnTo=${encodeURIComponent(returnTo)}`);

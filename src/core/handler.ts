@@ -53,14 +53,22 @@ function redirect(location: string, cookies: CookieToSet[] = [], status = 303): 
   return respond(null, { status, headers: { Location: location } }, cookies);
 }
 
+// A path a browser reads as another site: //evil.example or /\evil.example.
+function isSchemeRelative(path: string): boolean {
+  return path.startsWith("//") || path.startsWith("/\\");
+}
+
 // safeReturnTo keeps a sign-in's destination on this app: only a path, so a
-// crafted link can't use the sign-in to send the user to another site.
+// crafted link can't use the sign-in to send the user to another site. The
+// check runs on the path as normalized too, because /.//evil.example
+// normalizes to //evil.example.
 export function safeReturnTo(config: ResolvedConfig, returnTo: string | null | undefined): string {
-  if (!returnTo || !returnTo.startsWith("/") || returnTo.startsWith("//") || returnTo.startsWith("/\\")) return "/";
+  if (!returnTo || !returnTo.startsWith("/") || isSchemeRelative(returnTo)) return "/";
   try {
     const url = new URL(returnTo, config.appUrl);
     if (url.origin !== new URL(config.appUrl).origin) return "/";
-    return `${url.pathname}${url.search}${url.hash}`;
+    const path = `${url.pathname}${url.search}${url.hash}`;
+    return isSchemeRelative(path) ? "/" : path;
   } catch {
     return "/";
   }
