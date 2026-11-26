@@ -53,6 +53,47 @@ function redirect(location: string, cookies: CookieToSet[] = [], status = 303): 
   return respond(null, { status, headers: { Location: location } }, cookies);
 }
 
+// The User API's paths are plain segments (/passkeys/pk_123): nothing
+// encoded, so no %2F or %5C can reach another path at Authalla.
+const USER_API_PATH = /^(\/[A-Za-z0-9_-][A-Za-z0-9._~-]*)*$/;
+const MAX_USER_API_BODY = 64 * 1024;
+
+// The User API answers JSON. Served from the app's origin, it must never be
+// read as a page, whatever Content-Type comes back.
+const USER_API_HEADERS = {
+  "X-Content-Type-Options": "nosniff",
+  "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; sandbox",
+};
+
+class BodyTooLarge extends Error {}
+
+// readLimited reads a request body, refusing more than max bytes, also when
+// no Content-Length says so up front.
+async function readLimited(request: Request, max: number): Promise<string> {
+  if (Number(request.headers.get("Content-Length") ?? 0) > max) throw new BodyTooLarge();
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      throw new BodyTooLarge();
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
 // A path a browser reads as another site: //evil.example or /\evil.example.
 function isSchemeRelative(path: string): boolean {
   return path.startsWith("//") || path.startsWith("/\\");
@@ -195,6 +236,7 @@ export function createCore(options: AuthallaOptions = {}) {
   }
 
   async function userApi(cfg: ResolvedConfig, request: Request, jar: CookieJar, path: string): Promise<Response> {
+    if (!USER_API_PATH.test(path)) return json({ error: "not_found" }, 404);
     if (request.method !== "GET" && request.method !== "HEAD" && !sameOrigin(cfg, request)) {
       return json({ error: "forbidden", message: "Cross-site request refused" }, 403);
     }
@@ -206,6 +248,13 @@ export function createCore(options: AuthallaOptions = {}) {
     }
     const url = new URL(request.url);
     const hasBody = request.method !== "GET" && request.method !== "HEAD" && request.method !== "DELETE";
+    let body: string | undefined;
+    try {
+      body = hasBody ? await readLimited(request, MAX_USER_API_BODY) : undefined;
+    } catch (err) {
+      if (err instanceof BodyTooLarge) return json({ error: "too_large", message: "The request body is too large" }, 413, cookies);
+      throw err;
+    }
     let upstream: Response;
     try {
       upstream = await fetch(`${cfg.issuer}/me/v1${path}${url.search}`, {
@@ -215,7 +264,7 @@ export function createCore(options: AuthallaOptions = {}) {
           Accept: "application/json",
           ...(hasBody ? { "Content-Type": request.headers.get("Content-Type") ?? "application/json" } : {}),
         },
-        body: hasBody ? await request.text() : undefined,
+        body,
         cache: "no-store",
         signal: AbortSignal.timeout(10_000),
       });
@@ -229,7 +278,7 @@ export function createCore(options: AuthallaOptions = {}) {
       const refreshed = await freshen(cfg, applyToJar(jar, cookies), { force: true });
       cookies = [...cookies, ...refreshed.cookies];
     }
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = { ...USER_API_HEADERS };
     const contentType = upstream.headers.get("Content-Type");
     if (contentType) headers["Content-Type"] = contentType;
     return respond(upstream.status === 204 ? null : await upstream.arrayBuffer(), { status: upstream.status, headers }, cookies);

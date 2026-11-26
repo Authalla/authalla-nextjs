@@ -271,6 +271,33 @@ describe("User API", () => {
   it("answers 401 when nobody is signed in", async () => {
     expect((await browser.request("/api/auth/me")).status).toBe(401);
   });
+  it.each(["/api/auth/me/%2e%2e/%2e%2e/oauth2/userinfo", "/api/auth/me/%2E%2E/x", "/api/auth/me/passkeys/%2F..%2Fx", "/api/auth/me/passkeys/a%5Cb"])(
+    "never calls anything outside /me/v1 (%s)",
+    async (path) => {
+      await signIn();
+      const response = await browser.request(path);
+      expect(response.status).toBe(404);
+      expect(authalla.calls.some((c) => c.url.pathname.startsWith("/me") || c.url.pathname === "/oauth2/userinfo")).toBe(false);
+    },
+  );
+
+  it("serves the answer so a browser never runs it as a page", async () => {
+    await signIn();
+    const response = await browser.request("/api/auth/me/passkeys");
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(response.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
+  });
+
+  it("refuses a body over 64 KiB without calling Authalla", async () => {
+    await signIn();
+    const response = await browser.request("/api/auth/me", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "x".repeat(70_000) }),
+    });
+    expect(response.status).toBe(413);
+    expect(authalla.calls.some((c) => c.url.pathname === "/me/v1")).toBe(false);
+  });
 });
 
 it("answers 500 without leaking the reason when the app isn't configured", async () => {
