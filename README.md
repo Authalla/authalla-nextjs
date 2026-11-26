@@ -175,24 +175,23 @@ export const authalla = createAuthalla({
 ```
 
 A user signed in before you added a scope gets it when they next sign in.
-See the [User API reference](https://docs.authalla.com/docs/user-api).
 A failed call throws `UserApiError`; a 403 means the token lacks the scope.
-The types mirror the [User API reference](https://docs.authalla.com/docs/user-api) by hand.
+The types follow the [User API reference](https://docs.authalla.com/docs/user-api).
 
-## Layers
+## Entry points
 
-- `src/core`: OAuth, the sealed session and the route handler, on Web
-  `Request` and `Response`. No Next.js, no React.
-- `src/react` (`@authalla/nextjs/client`): the provider and hooks. No Next.js.
-- `src/nextjs` (`@authalla/nextjs`): `cookies()`, `headers()`, `redirect()`
-  and the proxy.
+- `@authalla/nextjs`: `createAuthalla()`, for the server: `cookies()`,
+  `headers()`, `redirect()` and the proxy.
+- `@authalla/nextjs/client`: the provider and hooks. No Next.js.
+- `@authalla/nextjs/core`: OAuth, the sealed session and the route handler,
+  on Web `Request` and `Response`. No Next.js, no React.
 
 The lint config enforces the direction, so an adapter for React Router or
 TanStack Start can reuse `core` and `react` as they are.
 
 ## Example
 
-[`examples/nextjs-app`](examples/nextjs-app) is a small app set up the way a
+[`examples/nextjs-app`](https://github.com/Authalla/authalla-nextjs/tree/main/examples/nextjs-app) is a small app set up the way a
 new `create-next-app` is, with Cache Components on: sign-in and sign-out
 from the server and the browser, a protected page, a Server Action changing
 the user's name, and the user's passkeys. To run it against your tenant,
@@ -212,9 +211,4 @@ fails CI.
 
 ## Releasing
 
-1. Bump `version` in `package.json` and add its entry to `CHANGELOG.md`.
-2. Commit, then tag and push: `git tag v0.2.0 && git push origin main v0.2.0`.
-
-The Release workflow tests and builds the tag, checks the package contents,
-and publishes to npm with provenance through npm trusted publishing: no npm
-token is stored anywhere. It then creates the GitHub release.
+See [RELEASING.md](https://github.com/Authalla/authalla-nextjs/blob/main/RELEASING.md).
