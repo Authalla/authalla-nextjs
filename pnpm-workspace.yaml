@@ -1,3 +1,6 @@
+packages:
+  - examples/*
+
 # Supply-chain settings, the same as the Authalla server repo's.
 
 # No dependency runs install scripts.

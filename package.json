@@ -48,7 +48,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "check-package": "node scripts/check-package.mjs",
-    "prepublishOnly": "pnpm build && pnpm check-package"
+    "prepublishOnly": "pnpm build && pnpm check-package",
+    "example": "pnpm build && pnpm --filter authalla-nextjs-example build && pnpm --filter authalla-nextjs-example smoke"
   },
   "peerDependencies": {
     "next": ">=16",
@@ -57,10 +58,13 @@
   "devDependencies": {
     "@types/node": "^26",
     "@types/react": "^19",
+    "@types/react-dom": "^19.3.0",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.1.1",
+    "happy-dom": "^21.0.4",
     "next": "16.4.6",
     "react": "^19.2.1",
+    "react-dom": "^19.3.1",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.72.1",
     "vitest": "^5.1.0"

@@ -13,6 +13,7 @@ import { ERROR_DESCRIPTION_PARAM, ERROR_PARAM, ERROR_PROMPT_PARAM } from "./cons
 import { resolveConfig, type AuthallaOptions, type ResolvedConfig } from "./config.js";
 import { applyToJar, cookieName, parseCookieHeader, serializeCookie, type CookieJar, type CookieToSet } from "./cookies.js";
 import { authorizationUrl, exchangeCode, logoutUrl, OAuthError, revoke, type SignInParams } from "./oauth.js";
+import { readSignInParams } from "./sign-in-path.js";
 import { randomString, seal, sha256Base64Url, unseal } from "./seal.js";
 import {
   clearStoredSession,
@@ -82,17 +83,6 @@ function withError(config: ResolvedConfig, returnTo: string, error: string, desc
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
-function signInParams(query: URLSearchParams): SignInParams {
-  const prompt = query.get("prompt");
-  const maxAge = query.get("max_age");
-  return {
-    loginHint: query.get("login_hint") ?? undefined,
-    uiLocales: query.get("ui_locales") ?? undefined,
-    prompt: prompt === "create" || prompt === "login" || prompt === "passkey" ? prompt : undefined,
-    maxAge: maxAge && /^\d+$/.test(maxAge) ? Number(maxAge) : undefined,
-  };
-}
-
 export type AuthallaCore = ReturnType<typeof createCore>;
 
 export function createCore(options: AuthallaOptions = {}) {
@@ -100,7 +90,7 @@ export function createCore(options: AuthallaOptions = {}) {
 
   async function signIn(cfg: ResolvedConfig, request: Request): Promise<Response> {
     const query = new URL(request.url).searchParams;
-    const params = signInParams(query);
+    const params = readSignInParams(query);
     const pending: PendingSignIn = {
       state: randomString(),
       verifier: randomString(48),
@@ -156,8 +146,9 @@ export function createCore(options: AuthallaOptions = {}) {
     }
   }
 
-  async function signOut(cfg: ResolvedConfig, request: Request, jar: CookieJar): Promise<Response> {
-    if (!sameOrigin(cfg, request)) return json({ error: "forbidden" }, 403);
+  // endSession revokes the grant and clears the session, and says where to
+  // send the browser: Authalla's logout, which comes back to the app.
+  async function endSession(cfg: ResolvedConfig, jar: CookieJar): Promise<{ cookies: CookieToSet[]; location: string }> {
     const stored = await readStoredSession(cfg, jar);
     let reachable = true;
     if (stored && !isEnded(stored)) {
@@ -175,7 +166,12 @@ export function createCore(options: AuthallaOptions = {}) {
     const cookies = clearStoredSession(cfg, jar);
     // Without Authalla its logout page would be the browser's error page, so
     // the user stays here, signed out of the app.
-    const location = reachable ? logoutUrl(cfg) : cfg.postLogoutRedirectUri;
+    return { cookies, location: reachable ? logoutUrl(cfg) : cfg.postLogoutRedirectUri };
+  }
+
+  async function signOut(cfg: ResolvedConfig, request: Request, jar: CookieJar): Promise<Response> {
+    if (!sameOrigin(cfg, request)) return json({ error: "forbidden" }, 403);
+    const { cookies, location } = await endSession(cfg, jar);
     return redirect(location, cookies);
   }
 
@@ -261,6 +257,14 @@ export function createCore(options: AuthallaOptions = {}) {
     /** The session from a request's cookies, without refreshing it. */
     async readSession(cookieHeader: string | null | undefined, requestUrl?: string) {
       return readStoredSession(config(requestUrl), parseCookieHeader(cookieHeader));
+    },
+    /**
+     * Signs out from the server: the cookies to set and where to send the
+     * browser. The caller must have checked the request is this app's own
+     * (a Server Action is).
+     */
+    async signOut(cookieHeader: string | null | undefined, requestUrl?: string) {
+      return endSession(config(requestUrl), parseCookieHeader(cookieHeader));
     },
     /** Refreshes the session if its access token is about to expire. */
     async freshen(cookieHeader: string | null | undefined, opts?: { force?: boolean }, requestUrl?: string) {

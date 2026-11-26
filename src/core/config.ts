@@ -53,6 +53,11 @@ function trimSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
+/** Where the route handler is mounted; needs no environment. */
+export function basePathOf(options: AuthallaOptions): string {
+  return trimSlash(options.basePath ?? "/api/auth");
+}
+
 // resolveConfig fills options from the environment. requestUrl is the
 // fallback for appUrl outside production, so `next dev` on any port works.
 export function resolveConfig(options: AuthallaOptions, requestUrl?: string): ResolvedConfig {
@@ -78,7 +83,7 @@ export function resolveConfig(options: AuthallaOptions, requestUrl?: string): Re
     appUrl = new URL(requestUrl).origin;
   }
   appUrl = trimSlash(appUrl);
-  const basePath = trimSlash(options.basePath ?? "/api/auth");
+  const basePath = basePathOf(options);
 
   return {
     issuer: trimSlash(issuer),
